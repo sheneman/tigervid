@@ -6,7 +6,7 @@ Usage: python tigervid.py <INPUT_DIR> <OUTPUT_DIR> <MODEL_PATH> <SAMPLE_INTERVAL
 Where:  
   * **<INPUT_DIR>** is a single directory containing one or more **MP4** videos to scan  
   * **<OUTPUT_DIR>** is the directory that will contain the extracted clips and final report  
-  * **<MODEL_PATH>** is the path to a YOLOv5 detection model weights file (e.g. MegaDetector)  
+  * **<MODEL_PATH>** is the path to a YOLOv5 detection model weights file (e.g. [MegaDetector] (https://github.com/microsoft/CameraTraps))
   * **<SAMPLE_INTERVAL>** is the number of video frames.  I recommend using 30, which is often about 1 second of video 
 
 ## Installation
