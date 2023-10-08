@@ -3,7 +3,7 @@
 
 Usage: python acount.py <INPUT_DIR> <OUTPUT_DIR> <MODEL_PATH> <SAMPLE_INTERVAL>
 
-Where:
+Where:  
   <INPUT_DIR> is a single directory containing one or more videos to scan  
   <OUTPUT_DIR> is the directory that will contain the extracted clips and final report  
   <MODEL_PATH> is the path to a YOLOv5 detection model weights file (e.g. MegaDetector)  
