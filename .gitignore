@@ -1,0 +1,13 @@
+env/*
+env*
+input/*
+inputs/*
+output/*
+outputs/*
+videos/*
+__pycache__
+__pycache__/*
+*.pt
+*.mp4
+md_v5a.0.0.pt
+venv/

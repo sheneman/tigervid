@@ -1,7 +1,7 @@
-# Animal Count
+# TigerVid
 ## Scans video looking for frames which include animals, produced clips and a final report
 
-Usage: python acount.py <INPUT_DIR> <OUTPUT_DIR> <MODEL_PATH> <SAMPLE_INTERVAL>
+Usage: python tigervid.py <INPUT_DIR> <OUTPUT_DIR> <MODEL_PATH> <SAMPLE_INTERVAL>
 
 Where:  
   **<INPUT_DIR>** is a single directory containing one or more **MP4** videos to scan  
@@ -13,9 +13,19 @@ Where:
 
 python3 -m venv venv  
 source venv/bin/activate  
-
+  
 pip install -U pip  
-pip install -r requirements.txt  
+pip install torch  
+pip install pillow  
+pip install opencv-python  
+pip install imageio[ffmpeg]  
+pip install tqdm  
+pip install pandas  
+pip install requests  
+
+**or** pip install -r requirements.txt  
+
+
 
 ## Interpreting the results
 
