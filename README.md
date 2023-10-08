@@ -1,5 +1,5 @@
 # TigerVid
-## Scans video looking for frames which include animals, produced clips and a final report
+## Scans video looking for frames which include animals, produce clips and a final report
 
 Usage: python tigervid.py <INPUT_DIR> <OUTPUT_DIR> <MODEL_PATH> <SAMPLE_INTERVAL>
 
