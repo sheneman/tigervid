@@ -29,7 +29,7 @@ pip install requests
 
 ## Interpreting the results
 
-The derived cliips will include some annotation on the frames which shows:  
+The derived video clips will be named based on the original video and include some annotation on the frames which shows:  
 
 <img width="474" alt="image" src="https://github.com/sheneman/tigervid/assets/3028345/3ded327d-6a0e-4b34-9b02-acccb867bf94">  
 
