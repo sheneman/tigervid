@@ -25,7 +25,7 @@ pip install requests
 
 **or** pip install -r requirements.txt  
 
-
+**A Note on GPUs**: This tool uses deep learning methods to detect animals, specifically using [PyTorch](https://pytorch.org) and YOLOv5 [YOLOv5](https://github.com/ultralytics/yolov5). A CUDA-compatible GPU is recommended but not required.  
 
 ## Interpreting the results
 
