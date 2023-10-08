@@ -30,7 +30,9 @@ pip install requests
 ## Interpreting the results
 
 The derived cliips will include some annotation on the frames which shows:  
-<img width="529" alt="image" src="https://github.com/sheneman/animal_count/assets/3028345/17e3cdac-edba-4852-a821-314bec28c7ed">  
+
+<img width="474" alt="image" src="https://github.com/sheneman/tigervid/assets/3028345/3ded327d-6a0e-4b34-9b02-acccb867bf94">  
+
 
 * The frame number within the **ORIGINAL** video file
 * The timestamp within the **ORIGINAL** video file
