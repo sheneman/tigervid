@@ -12,8 +12,9 @@ Where:
 ## Installation
 
 python3 -m venv venv  
-source venv/bin/activate  
-  
+**Linux:** source venv/bin/activate   
+**Windows:**  venv\bin\activate  
+
 pip install -U pip  
 pip install torch  
 pip install pillow  
