@@ -29,18 +29,24 @@ DEFAULT_INTERVAL = 30  # number of frames between samples
 DEFAULT_BUFFER_TIME = 5 # number of seconds of video to include before first detection and after last detection
 DEFAULT_REPORT_FILENAME = "report.csv"
 DEFAULT_NPROCS = 4
+DEFAULT_BATCH_SIZE = 8
 
 parser = argparse.ArgumentParser(prog='tigervid', description='Analyze videos and extract clips and metadata which contain animals.')
+
 parser.add_argument('input',  metavar='INPUT_DIR',  default="input",  help='Path to input directory containing MP4 videos')
 parser.add_argument('output', metavar='OUTPUT_DIR', default="output", help='Path to output directory for clips and metadatas')
-parser.add_argument('-m', '--model', default=DEFAULT_MODEL, help='Path to the PyTorch model weights file')
-parser.add_argument('-n', '--interval', default=DEFAULT_INTERVAL, help='Number of frames to read between sampling with AI')
-parser.add_argument('-b', '--buffer', default=DEFAULT_BUFFER_TIME, help='Number of seconds to prepend and append to clip')
-parser.add_argument('-r', '--report', default=DEFAULT_REPORT_FILENAME, help='Name of report metadata')
-parser.add_argument('-p', '--processes', default=DEFAULT_NPROCS, help='Number of concurrent (parallel) processes')
+
+parser.add_argument('-m', '--model', default=DEFAULT_MODEL, help='Path to the PyTorch model weights file (DEFAULT: '+DEFAULT_MODEL+')')
+parser.add_argument('-i', '--interval', default=DEFAULT_INTERVAL, help='Number of frames to read between sampling with AI (DEFAULT: '+str(DEFAULT_INTERVAL)+')')
+parser.add_argument('-b', '--buffer', default=DEFAULT_BUFFER_TIME, help='Number of seconds to prepend and append to clip (DEFAULT: '+str(DEFAULT_BUFFER_TIME)+')')
+parser.add_argument('-r', '--report', default=DEFAULT_REPORT_FILENAME, help='Name of report metadata (DEFAULT: '+DEFAULT_REPORT_FILENAME+')')
+parser.add_argument('-p', '--processes', default=DEFAULT_NPROCS, help='Number of concurrent (parallel) processes (DEFAULT: '+str(DEFAULT_NPROCS)+')')
+parser.add_argument('-s', '--batchsize', default=DEFAULT_BATCH_SIZE, help='The batch size for inference (DEFAULT: '+str(DEFAULT_BATCH_SIZE)+')')
+
 group = parser.add_mutually_exclusive_group()
-group.add_argument('-g', '--gpu', action='store_true',  default=True, help='Use GPU if available')
+group.add_argument('-g', '--gpu', action='store_true',  default=True, help='Use GPU if available (DEFAULT)')
 group.add_argument('-c', '--cpu', action='store_false', default=False, help='Use CPU only')
+
 args = parser.parse_args()
 
 
