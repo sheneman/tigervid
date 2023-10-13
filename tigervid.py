@@ -74,10 +74,10 @@ print('''
 ****************************************************
 *                       __,,,,_                    *
 *        _ __..-;''`--/'/ /.',-`-.                 *
-*    (`/' ` |  \ \ \\ / / / / .-'/`,_              *
+*    (`/' ` |  \ \ \\ / / / / .-'/`,_               *
 *   /'`\ \   |  \ | \| // // / -.,/_,'-,           *
 *  /<7' ;  \ \  | ; ||/ /| | \/    |`-/,/-.,_,/')  *
-* /  _.-, `,-\,__|  _-| / \ \/|_/  |    '-/.;.\'   *
+* /  _.-, `,-\,__|  _-| / \ \/|_/  |    '-/.;.\'    * 
 * `-`  f/ ;      / __/ \__ `/ |__/ |               *
 *      `-'      |  -| =|\_  \  |-' |               *
 *            __/   /_..-' `  ),'  //               *
@@ -92,7 +92,6 @@ print("        INPUT_DIR: ", args.input)
 print("       OUTPUT_DIR: ", args.output)
 print("    MODEL WEIGHTS: ", args.model)
 print("SAMPLING INTERVAL: ", args.interval, "frames")
-print("            MODEL: ", args.model)
 print("  BUFFER DURATION: ", args.buffer, "seconds")
 print(" CONCURRENT PROCS: ", args.processes)
 print("       BATCH SIZE: ", args.batchsize)
@@ -167,25 +166,6 @@ for filename in glob.glob(path):
 	pbar = tqdm(range(nframes),ncols=100,unit=" frames")
 	pbar.set_postfix({'tigers detected': 0})
 
-	x = '''	
-	success, image = invid.read()
-	print(image.shape)
-	for i in pbar:
-		if success:
-			if((count % args.interval)==0):
-				results = model(image).pandas().xyxy[0]
-				ntargets = results.shape[0]
-				if(ntargets):
-					detections.append((count,ntargets,results["confidence"].mean()))
-					tiger_frames += 1
-					pbar.set_postfix({'frames w/tigers': tiger_frames})
-					
-
-			success, image = invid.read()
-			count += 1
-		else:
-			break
-	'''
 
 	count = 0	
 	goo = []
@@ -193,42 +173,17 @@ for filename in glob.glob(path):
 		success, image = invid.read()
 		if success:
 			if((i % args.interval)==0):
-				#results = model(image).pandas().xyxy[0]
 				inference_buffer[count] = cv2.resize(image, (640,640))
-				#goo.append(cv2.resize(image, (640,640)))
-			
-				#	
-				#ntargets = results.shape[0]
-				#if(ntargets):
-				#	detections.append((count,ntargets,results["confidence"].mean()))
-				#	tiger_frames += 1
-				#	pbar.set_postfix({'frames w/tigers': tiger_frames})
-				#
-
 				count += 1
 		else:
 			break
-
-	print("COUNT: ", count)
-	#f = inference_buffer[0:count]
-	#print("F: ", f.shape)
-	#goo = [f[i] for i in range(f.shape[0])]
-	#print("LEN(GOO): ", len(goo))
-	#lists = split(goo,8)
-	#for l in lists:
-	#    print("Batch...")
-	#    r = model(l)
-#
-##	for x in range(len(goo)):
-#		print(res.pandas().xyxy[x])
-#
-#	exit(0)
 
 	print("%d images in inference buffer.  Now performing inference" %count)
 
 	nbatches = (count + args.batchsize - 1) // args.batchsize
 
 	# Iterate over the array to copy batches
+	tiger_frames = {}	
 	for b in range(nbatches):
 		start_idx = b * args.batchsize
 		end_idx = start_idx + args.batchsize
@@ -237,14 +192,19 @@ for filename in glob.glob(path):
 		batch_images = inference_buffer[start_idx:end_idx] 
 #		print(start_idx, end_idx, batch_images.shape)
 	
-		image_tensors = torch.from_numpy(batch_images).permute(0, 3, 1, 2).float() / 255.0  # Normalize to [0,1]
+		image_tensors = torch.from_numpy(batch_images).permute(0, 3, 1, 2).float() / 255.0  
 		detections_tensor = model(image_tensors)
 	
-		x = non_max_suppression(detections_tensor)
-    
-		for a in x:
-		    j= a.cpu().detach().numpy()
-		    print(j)
+		detections = non_max_suppression(detections_tensor)
+
+		for i, d in enumerate(detections):
+			frame_idx = b*args.batchsize+i
+			dn = d.cpu().detach().numpy()
+			if len(dn):
+				tiger_frames[frame_idx] = dn
+		
+	for key in tiger_frames:
+		print(key, tiger_frames[key])
     
 
 	exit(0)
