@@ -11,3 +11,5 @@ __pycache__/*
 *.mp4
 md_v5a.0.0.pt
 venv/
+.*swp
+*.bup
