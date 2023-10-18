@@ -40,10 +40,10 @@ parser.add_argument('input',  metavar='INPUT_DIR',  default="input",  help='Path
 parser.add_argument('output', metavar='OUTPUT_DIR', default="output", help='Path to output directory for clips and metadatas')
 
 parser.add_argument('-m', '--model', default=DEFAULT_MODEL, help='Path to the PyTorch model weights file (DEFAULT: '+DEFAULT_MODEL+')')
-parser.add_argument('-i', '--interval', default=DEFAULT_INTERVAL, help='Number of frames to read between sampling with AI (DEFAULT: '+str(DEFAULT_INTERVAL)+')')
-parser.add_argument('-b', '--buffer', default=DEFAULT_BUFFER_TIME, help='Number of seconds to prepend and append to clip (DEFAULT: '+str(DEFAULT_BUFFER_TIME)+')')
+parser.add_argument('-i', '--interval', type=int, default=DEFAULT_INTERVAL, help='Number of frames to read between sampling with AI (DEFAULT: '+str(DEFAULT_INTERVAL)+')')
+parser.add_argument('-b', '--buffer', type=int, default=DEFAULT_BUFFER_TIME, help='Number of seconds to prepend and append to clip (DEFAULT: '+str(DEFAULT_BUFFER_TIME)+')')
 parser.add_argument('-r', '--report', default=DEFAULT_REPORT_FILENAME, help='Name of report metadata (DEFAULT: '+DEFAULT_REPORT_FILENAME+')')
-parser.add_argument('-p', '--processes', default=DEFAULT_NPROCS, help='Number of concurrent (parallel) processes (DEFAULT: '+str(DEFAULT_NPROCS)+')')
+parser.add_argument('-p', '--processes', type=int, default=DEFAULT_NPROCS, help='Number of concurrent (parallel) processes (DEFAULT: '+str(DEFAULT_NPROCS)+')')
 parser.add_argument('-s', '--batchsize', type=int, default=DEFAULT_BATCH_SIZE, help='The batch size for inference (DEFAULT: '+str(DEFAULT_BATCH_SIZE)+')')
 parser.add_argument('-l', '--label', default=False, help='Include bounding box labels on output video (DEFAULT: OFF')
 
@@ -128,8 +128,30 @@ def grouper(iterable):
 	if group:
 		yield group
 
+
+def confidence(group, frames):
+	min = 9999.0
+	max = 0
+	sum = 0
+	count = 0
+	for i in group:
+		detections = frames[i]
+		for d in detections:
+			c = d[4]
+			if(c < min):
+			    min = c
+			if(c > max):
+			    max = c
+
+			count += 1
+			sum   += c
+	avg = sum/float(count)
+    
+	return(min, max, avg)
+			
+
 report_file = open(args.report, "w")
-report_file.write("ORIGINAL, CLIP, START_FRAME, START_TIME, END_FRAME, END_TIME, NUM FRAMES, DURATION\n")
+report_file.write("ORIGINAL, CLIP, START_FRAME, START_TIME, END_FRAME, END_TIME, NUM FRAMES, DURATION, MIN_CONF, MAX_CONF, MEAN_CONF\n")
 
 path = os.path.join(args.input, "*.mp4")
 
@@ -181,6 +203,7 @@ for filename in glob.glob(path):
 	print("%d images in inference buffer.  Now performing inference" %count)
 
 	nbatches = (count + args.batchsize - 1) // args.batchsize
+	print("NBATCHES: ", nbatches)
 
 	# Iterate over the array to copy batches
 	tiger_frames = {}	
@@ -190,7 +213,7 @@ for filename in glob.glob(path):
 		if(end_idx > count):
 			end_idx = count
 		batch_images = inference_buffer[start_idx:end_idx] 
-#		print(start_idx, end_idx, batch_images.shape)
+		#print(start_idx, end_idx, batch_images.shape)
 	
 		image_tensors = torch.from_numpy(batch_images).permute(0, 3, 1, 2).float() / 255.0  
 		detections_tensor = model(image_tensors)
@@ -198,29 +221,27 @@ for filename in glob.glob(path):
 		detections = non_max_suppression(detections_tensor)
 
 		for i, d in enumerate(detections):
-			frame_idx = b*args.batchsize+i
+			frame_idx = (b*args.batchsize+i)*args.interval
 			dn = d.cpu().detach().numpy()
 			if len(dn):
 				tiger_frames[frame_idx] = dn
 		
 	for key in tiger_frames:
-		print(key, tiger_frames[key])
-    
+	    print(key, tiger_frames[key])
 
-	exit(0)
-	
-
-	frames_list = [t[0] for t in detections]
-	groups = dict(enumerate(grouper(frames_list), 0))
+	groups = dict(enumerate(grouper(tiger_frames.keys()), 0))
 	print("IDENTIFIED %d CLIPS THAT INCLUDE TIGERS" %(len(groups)))
 	print(groups)
-	exit(0)
 
 	for g in groups:
 
+		min_conf, max_conf, mean_conf = confidence(groups[g], tiger_frames) 
+		print(min_conf, max_conf, mean_conf)
+	    
+
 		fn = os.path.basename(filename)
 		clip_name = os.path.splitext(fn)[0] + "_{:03d}".format(g) + ".mp4"
-		clip_path = os.path.join(argx.output, clip_name)
+		clip_path = os.path.join(args.output, clip_name)
 
 		fourcc = cv2.VideoWriter_fourcc(*'mp4v')	
 		outvid = cv2.VideoWriter(clip_path, fourcc, fps, (width,height))
@@ -234,7 +255,7 @@ for filename in glob.glob(path):
 			end_frame = nframes-1;
 
 		invid.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-		s = "\"%s\", \"%s\", %d, %f, %d, %f, %d, %f\n" %(filename, clip_path, start_frame, start_frame/fps, end_frame, end_frame/fps, end_frame-start_frame, (end_frame-start_frame)/fps)
+		s = "\"%s\", \"%s\", %d, %f, %d, %f, %d, %f, %.02f, %.02f, %.02f\n" %(filename, clip_path, start_frame, start_frame/fps, end_frame, end_frame/fps, end_frame-start_frame, (end_frame-start_frame)/fps, min_conf, max_conf, mean_conf)
 		report_file.write(s)
 		print("CLIP %d: start=%d, end=%d" %(g,start_frame,end_frame))
 		print("SAVING CLIP: ", clip_path, "...")
