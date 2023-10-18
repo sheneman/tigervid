@@ -86,6 +86,8 @@ else:
     
 
 
+all_start_time = time.time()
+
 print('''
 ****************************************************
 *                       __,,,,_                    *
@@ -173,6 +175,7 @@ path = os.path.join(args.input, "*.mp4")
 # pre-allocate our inference buffer
 inference_buffer = np.empty((4096, 640, 640, 3), dtype=np.uint8)
 
+filecnt = 0
 for filename in glob.glob(path):
 
 	start_time = time.time()
@@ -196,17 +199,23 @@ for filename in glob.glob(path):
 	
 	print("\n")
 
-	invid = cv2.VideoCapture(filename)
+	try:
+	    invid = cv2.VideoCapture(filename)
+	except:
+	    print("Could not read video file: ", filename, " skipping...")
+	    continue
+
+	filecnt += 1
 
 	count        = 0
 	tiger_frames = 0
 	detections   = []
 
+	print("Sampling video...")
 	pbar = tqdm(range(nframes),ncols=100,unit=" frames")
-	pbar.set_postfix({'tigers detected': 0})
 
+	start_time = time.time()
 	count = 0	
-	goo = []
 	for i in pbar:
 		success, image = invid.read()
 		if success:
@@ -215,11 +224,16 @@ for filename in glob.glob(path):
 				count += 1
 		else:
 			break
+	end_time = time.time()
 
-	print("%d images in inference buffer.  Now performing inference" %count)
+	print("%d samples taken from video in %.02f seconds." %(count, (end_time-start_time)))
+	print("Now performing tiger detection...")
+	
 
 	nbatches = (count + args.batchsize - 1) // args.batchsize
-	print("NBATCHES: ", nbatches)
+	#print("NBATCHES: ", nbatches)
+
+	start_time=time.time()
 
 	# Iterate over the array to copy batches
 	tiger_frames = {}	
@@ -243,8 +257,15 @@ for filename in glob.glob(path):
 				tiger_frames[frame_idx] = dn
 		
 	groups = dict(enumerate(grouper(tiger_frames.keys()), 0))
-	print("IDENTIFIED %d CLIPS THAT INCLUDE TIGERS" %(len(groups)))
 
+	end_time = time.time()
+
+	print("Tiger detection complete in %.02f seconds" %(end_time-start_time))
+	print("\n***IDENTIFIED %d CLIPS THAT INCLUDE TIGERS***\n" %(len(groups)))
+
+	print("Saving clips...")
+
+	start_time = time.time()
 	for g in groups:
 
 		min_conf, max_conf, mean_conf = confidence(groups[g], tiger_frames) 
@@ -276,14 +297,14 @@ for filename in glob.glob(path):
 			else:
 				break
 		outvid.release()
-		print("CREATED CLIP: ", clip_path)
 
 	end_time = time.time()
-	print("TIME TAKEN: %.03f seconds" %(end_time - start_time))
+	print("Clips saved in: %.02f seconds" %(end_time - start_time))
 	
 	invid.release()
 	
-
 report_file.close()
 
-print("DONE\n\n")
+print("\nDONE\n")
+print("Total time to process %d videos: %.02f seconds" %(filecnt, time.time()-all_start_time))
+
