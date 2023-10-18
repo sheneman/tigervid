@@ -15,7 +15,7 @@
 ####################################################################
 
 
-import os, sys
+import os, sys, time
 import argparse
 import cv2
 from PIL import Image
@@ -26,12 +26,12 @@ import imageio
 from tqdm import tqdm	
 from general import non_max_suppression
 
-DEFAULT_MODEL = 'md_v5a.0.0.pt'
-DEFAULT_INTERVAL = 30  # number of frames between samples
-DEFAULT_BUFFER_TIME = 5 # number of seconds of video to include before first detection and after last detection
+DEFAULT_MODEL           = 'md_v5a.0.0.pt'
+DEFAULT_INTERVAL        = 30  # number of frames between samples
+DEFAULT_BUFFER_TIME     = 5   # number of seconds of video to include before first detection and after last detection
 DEFAULT_REPORT_FILENAME = "report.csv"
-DEFAULT_NPROCS = 4
-DEFAULT_BATCH_SIZE = 8
+DEFAULT_NPROCS          = 4
+DEFAULT_BATCH_SIZE      = 8
 
 
 parser = argparse.ArgumentParser(prog='tigervid', description='Analyze videos and extract clips and metadata which contain animals.')
@@ -45,11 +45,10 @@ parser.add_argument('-b', '--buffer', type=int, default=DEFAULT_BUFFER_TIME, hel
 parser.add_argument('-r', '--report', default=DEFAULT_REPORT_FILENAME, help='Name of report metadata (DEFAULT: '+DEFAULT_REPORT_FILENAME+')')
 parser.add_argument('-p', '--processes', type=int, default=DEFAULT_NPROCS, help='Number of concurrent (parallel) processes (DEFAULT: '+str(DEFAULT_NPROCS)+')')
 parser.add_argument('-s', '--batchsize', type=int, default=DEFAULT_BATCH_SIZE, help='The batch size for inference (DEFAULT: '+str(DEFAULT_BATCH_SIZE)+')')
-parser.add_argument('-l', '--label', default=False, help='Include bounding box labels on output video (DEFAULT: OFF')
 
 group = parser.add_mutually_exclusive_group()
 group.add_argument('-g', '--gpu', action='store_true',  default=True, help='Use GPU if available (DEFAULT)')
-group.add_argument('-c', '--cpu', action='store_false', default=False, help='Use CPU only')
+group.add_argument('-c', '--cpu', action='store_true', default=False, help='Use CPU only')
 
 args = parser.parse_args()
 #for k, v in args.__dict__.items():print(f"{k}: {v}")
@@ -68,6 +67,23 @@ if(not os.path.exists(args.output)):
 	print("Error:  Could not find output directory path '%s'" %args.output)
 	parser.print_usage()
 	exit(-1)
+
+if(args.cpu==True):
+	device = "cpu"
+	torch.device(device)
+	print("Using CPU")
+	usegpu = False
+else:
+	if(torch.cuda.is_available()):
+	    device = "cuda"
+	    usegpu = True
+	    print("Using GPU")
+	else:
+	    device = "cpu"
+	    usegpu = False
+
+	torch.device(device)
+    
 
 
 print('''
@@ -95,13 +111,13 @@ print("SAMPLING INTERVAL: ", args.interval, "frames")
 print("  BUFFER DURATION: ", args.buffer, "seconds")
 print(" CONCURRENT PROCS: ", args.processes)
 print("       BATCH SIZE: ", args.batchsize)
-print("      LABEL BOXES: ", args.label)
-print("          USE GPU: ", args.gpu)
+print("          USE GPU: ", usegpu)
 print("*********************************************\n\n")
 
 
 model = torch.hub.load('ultralytics/yolov5', 'custom', path=args.model)
 #model = torch.hub.load('ultralytics/yolov5', 'yolov5s')
+model.to(device)
 
 
 def label(img, frame, fps):
@@ -118,7 +134,6 @@ def grouper(iterable):
 	prev = None
 	group = []
 	for item in iterable:
-		#if prev is None or item - prev <= 3*args.interval:  
 		if prev is None or item - prev <= 3*args.interval:  
 			group.append(item)
 		else:
@@ -160,6 +175,8 @@ inference_buffer = np.empty((4096, 640, 640, 3), dtype=np.uint8)
 
 for filename in glob.glob(path):
 
+	start_time = time.time()
+
 	# Use imageio[ffmpeg] to determine the number of frames	
 	v=imageio.get_reader(filename,  'ffmpeg')
 	nframes  = v.count_frames()
@@ -187,7 +204,6 @@ for filename in glob.glob(path):
 
 	pbar = tqdm(range(nframes),ncols=100,unit=" frames")
 	pbar.set_postfix({'tigers detected': 0})
-
 
 	count = 0	
 	goo = []
@@ -226,18 +242,12 @@ for filename in glob.glob(path):
 			if len(dn):
 				tiger_frames[frame_idx] = dn
 		
-	for key in tiger_frames:
-	    print(key, tiger_frames[key])
-
 	groups = dict(enumerate(grouper(tiger_frames.keys()), 0))
 	print("IDENTIFIED %d CLIPS THAT INCLUDE TIGERS" %(len(groups)))
-	print(groups)
 
 	for g in groups:
 
 		min_conf, max_conf, mean_conf = confidence(groups[g], tiger_frames) 
-		print(min_conf, max_conf, mean_conf)
-	    
 
 		fn = os.path.basename(filename)
 		clip_name = os.path.splitext(fn)[0] + "_{:03d}".format(g) + ".mp4"
@@ -267,8 +277,12 @@ for filename in glob.glob(path):
 				break
 		outvid.release()
 		print("CREATED CLIP: ", clip_path)
+
+	end_time = time.time()
+	print("TIME TAKEN: %.03f seconds" %(end_time - start_time))
 	
 	invid.release()
+	
 
 report_file.close()
 
