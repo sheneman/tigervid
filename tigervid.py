@@ -178,6 +178,12 @@ def confidence(group, frames):
 	avg = sum/float(count)
     
 	return(min, max, avg)
+
+
+def chunks(files, n):
+    n = max(1, n)
+    return (files[i:i+n] for i in range(0, len(files), n))
+
 			
 
 report_file = open(args.report, "w")
@@ -185,190 +191,194 @@ report_file.write("ORIGINAL, CLIP, START_FRAME, START_TIME, END_FRAME, END_TIME,
 
 path = os.path.join(args.input, "*.mp4")
 
+def process_chunk(chunk):
+	filecnt = 0
+	for filename in chunk:
 
-filecnt = 0
-for filename in glob.glob(path):
+	    start_time = time.time()
 
-	start_time = time.time()
+	    # Use imageio[ffmpeg] to determine the number of frames	
+	    v=imageio.get_reader(filename,  'ffmpeg')
+	    nframes  = v.count_frames()
+	    metadata = v.get_meta_data()
+	    fps = metadata['fps']
+	    duration = metadata['duration']
+	    size = metadata['size']
+	    (width,height) = size
+	    buffer_frames = int(fps*args.buffer)
 
-	# Use imageio[ffmpeg] to determine the number of frames	
-	v=imageio.get_reader(filename,  'ffmpeg')
-	nframes  = v.count_frames()
-	metadata = v.get_meta_data()
-	fps = metadata['fps']
-	duration = metadata['duration']
-	size = metadata['size']
-	(width,height) = size
-	buffer_frames = int(fps*args.buffer)
+	    # pre-allocate our inference buffer
+	    inference_buffer_size = (int(nframes/args.interval)+1,640,640,3)
+	    inference_buffer = np.empty(inference_buffer_size, dtype=np.uint8)
 
-	# pre-allocate our inference buffer
-	inference_buffer_size = (int(nframes/args.interval)+1,640,640,3)
-	inference_buffer = np.empty(inference_buffer_size, dtype=np.uint8)
+	    print("\n")
+	    print(" PROCESSING VIDEO:", filename)
+	    print("     TOTAL FRAMES:", nframes)
+	    print("              FPS:", fps)
+	    print("         DURATION:", duration, "seconds")
+	    print("       FRAME SIZE:", size)
+	    print(" INFERENCE BUFFER:", inference_buffer_size, "-- (%.0f MB)" %((reduce((lambda x, y: x * y), inference_buffer_size))/(1024*1024)))
+	    
+	    print("\n")
 
-	print("\n")
-	print(" PROCESSING VIDEO:", filename)
-	print("     TOTAL FRAMES:", nframes)
-	print("              FPS:", fps)
-	print("         DURATION:", duration, "seconds")
-	print("       FRAME SIZE:", size)
-	print(" INFERENCE BUFFER:", inference_buffer_size, "-- (%.0f MB)" %((reduce((lambda x, y: x * y), inference_buffer_size))/(1024*1024)))
-	
-	print("\n")
+	    try:
+		invid = cv2.VideoCapture(filename)
+	    except:
+		print("Could not read video file: ", filename, " skipping...")
+		continue
 
-	try:
-	    invid = cv2.VideoCapture(filename)
-	except:
-	    print("Could not read video file: ", filename, " skipping...")
-	    continue
+	    filecnt += 1
 
-	filecnt += 1
+	    count        = 0
+	    tiger_frames = 0
+	    detections   = []
 
-	count        = 0
-	tiger_frames = 0
-	detections   = []
+	    print("Sampling video...")
+	    pbar = tqdm(range(nframes),ncols=100,unit=" frames")
 
-	print("Sampling video...")
-	pbar = tqdm(range(nframes),ncols=100,unit=" frames")
+	    #
+	    # Sample frames from the video at the specified sampling interval
+	    # and put in a buffer
+	    #
+	    start_time = time.time()
+	    count = 0	
+	    for i in pbar:
+		    success, image = invid.read()
+		    if success:
+			    if((i % args.interval)==0):
+				    inference_buffer[count] = cv2.resize(image, (640,640))
+				    count += 1
+		    else:
+			    break
+	    end_time = time.time()
 
-	#
-	# Sample frames from the video at the specified sampling interval
-	# and put in a buffer
-	#
-	start_time = time.time()
-	count = 0	
-	for i in pbar:
-		success, image = invid.read()
-		if success:
-			if((i % args.interval)==0):
-				inference_buffer[count] = cv2.resize(image, (640,640))
-				count += 1
-		else:
-			break
-	end_time = time.time()
+	    print("%d samples taken from video every %d frames in %.02f seconds." %(count, args.interval, (end_time-start_time)))
+	    print("Now performing tiger detection...")
 
-	print("%d samples taken from video every %d frames in %.02f seconds." %(count, args.interval, (end_time-start_time)))
-	print("Now performing tiger detection...")
+	    nbatches = (count + args.batchsize - 1) // args.batchsize
 
-	nbatches = (count + args.batchsize - 1) // args.batchsize
+	    start_time=time.time()
 
-	start_time=time.time()
+	    pbar = tqdm(range(nbatches),ncols=100,unit=" batches")
 
-	pbar = tqdm(range(nbatches),ncols=100,unit=" batches")
+	    # Iterate over the array to copy batches
+	    tiger_frames = {}	
+	    for b in pbar:
+	    
+		    start_idx = b * args.batchsize
+		    end_idx = start_idx + args.batchsize
+		    if(end_idx > count):
+			    end_idx = count
+		    batch_images = inference_buffer[start_idx:end_idx] 
+	    
+		    image_tensors = torch.from_numpy(batch_images).permute(0, 3, 1, 2).float() / 255.0  
+		    detections_tensor = model(image_tensors)
+	    
+		    detections = non_max_suppression(detections_tensor)
 
-	# Iterate over the array to copy batches
-	tiger_frames = {}	
-	for b in pbar:
-	
-		start_idx = b * args.batchsize
-		end_idx = start_idx + args.batchsize
-		if(end_idx > count):
-			end_idx = count
-		batch_images = inference_buffer[start_idx:end_idx] 
-	
-		image_tensors = torch.from_numpy(batch_images).permute(0, 3, 1, 2).float() / 255.0  
-		detections_tensor = model(image_tensors)
-	
-		detections = non_max_suppression(detections_tensor)
+		    for i, d in enumerate(detections):
+			    frame_idx = (b*args.batchsize+i)*args.interval
+			    dn = d.cpu().detach().numpy()
+			    if len(dn):
+				    tiger_frames[frame_idx] = dn
 
-		for i, d in enumerate(detections):
-			frame_idx = (b*args.batchsize+i)*args.interval
-			dn = d.cpu().detach().numpy()
-			if len(dn):
-				tiger_frames[frame_idx] = dn
+	    del inference_buffer
+		    
+	    groups = dict(enumerate(grouper(tiger_frames.keys()), 0))
 
-	del inference_buffer
-		
-	groups = dict(enumerate(grouper(tiger_frames.keys()), 0))
-
-	#
-	# Merge groups which overlap due to buffer_frames
-	#
-	extents = []
-	for g in groups:
-	    start_frame = groups[g][0]-buffer_frames
-	    if(start_frame < 0):
-		    start_frame = 0
-
-	    end_frame = groups[g][len(groups[g])-1]+buffer_frames
-	    if(end_frame >= nframes):
-		    end_frame = nframes-1
-    
-	    extents.append([start_frame,end_frame])
-
-	dels = []
-	for i in range(len(extents) - 1):
-		cur = extents[i]
-		nxt = extents[i+1]
-
-		if(cur[1] >= nxt[0]):
-		    extents[i+1][0]=cur[0]
-		    dels.append(i)
-
-	new_extents = []
-	cnt = 0
-	for i in range(len(extents)):
-		if(not i in dels):
-		    new_extents.append(extents[i])
-    
-
-	i = 0
-	new_groups = {}
-	tkeys = list(tiger_frames.keys())
-	for e in new_extents:
-		min_index = bisect.bisect_left(tkeys,  e[0])
-		max_index = bisect.bisect_right(tkeys, e[1])	
-
-		new_groups[i] = []
-		for c in range(min_index, max_index):
-			new_groups[i].append(tkeys[c])
-		
-		i+=1
-
-	end_time = time.time()
-
-	print("Tiger detection complete in %.02f seconds" %(end_time-start_time))
-	print("\n***IDENTIFIED %d CLIPS THAT INCLUDE TIGERS***\n" %(len(new_groups)))
-
-	print("Saving clips...")
-
-	start_time = time.time()
-	for g in new_groups:
-
-		min_conf, max_conf, mean_conf = confidence(new_groups[g], tiger_frames) 
-
-		fn = os.path.basename(filename)
-		clip_name = os.path.splitext(fn)[0] + "_{:03d}".format(g) + ".mp4"
-		clip_path = os.path.join(args.output, clip_name)
-
-		fourcc = cv2.VideoWriter_fourcc(*'mp4v')	
-		outvid = cv2.VideoWriter(clip_path, fourcc, fps, (width,height))
-
-		start_frame = new_groups[g][0]-buffer_frames
+	    #
+	    # Merge groups which overlap due to buffer_frames
+	    #
+	    extents = []
+	    for g in groups:
+		start_frame = groups[g][0]-buffer_frames
 		if(start_frame < 0):
 			start_frame = 0
-	
-		end_frame = new_groups[g][len(new_groups[g])-1]+buffer_frames
-		if(end_frame >= nframes):
-			end_frame = nframes-1;
 
-		invid.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-		s = "\"%s\", \"%s\", %d, %f, %d, %f, %d, %f, %.02f, %.02f, %.02f\n" %(filename, clip_path, start_frame, start_frame/fps, end_frame, end_frame/fps, end_frame-start_frame, (end_frame-start_frame)/fps, min_conf, max_conf, mean_conf)
-		report_file.write(s)
-		report_file.flush()
-		print("CLIP %d: start=%d, end=%d" %(g,start_frame,end_frame))
-		print("SAVING CLIP: ", clip_path, "...")
-		for f in range(start_frame, end_frame):
-			success, image = invid.read()
+		end_frame = groups[g][len(groups[g])-1]+buffer_frames
+		if(end_frame >= nframes):
+			end_frame = nframes-1
+	
+		extents.append([start_frame,end_frame])
+
+	    dels = []
+	    for i in range(len(extents) - 1):
+		    cur = extents[i]
+		    nxt = extents[i+1]
+
+		    if(cur[1] >= nxt[0]):
+			extents[i+1][0]=cur[0]
+			dels.append(i)
+
+	    new_extents = []
+	    cnt = 0
+	    for i in range(len(extents)):
+		    if(not i in dels):
+			new_extents.append(extents[i])
+	
+
+	    i = 0
+	    new_groups = {}
+	    tkeys = list(tiger_frames.keys())
+	    for e in new_extents:
+		    min_index = bisect.bisect_left(tkeys,  e[0])
+		    max_index = bisect.bisect_right(tkeys, e[1])	
+
+		    new_groups[i] = []
+		    for c in range(min_index, max_index):
+			    new_groups[i].append(tkeys[c])
+		    
+		    i+=1
+
+	    end_time = time.time()
+
+	    print("Tiger detection complete in %.02f seconds" %(end_time-start_time))
+	    print("\n***IDENTIFIED %d CLIPS THAT INCLUDE TIGERS***\n" %(len(new_groups)))
+
+	    print("Saving clips...")
+
+	    start_time = time.time()
+	    for g in new_groups:
+
+		    min_conf, max_conf, mean_conf = confidence(new_groups[g], tiger_frames) 
+
+		    fn = os.path.basename(filename)
+		    clip_name = os.path.splitext(fn)[0] + "_{:03d}".format(g) + ".mp4"
+		    clip_path = os.path.join(args.output, clip_name)
+
+		    fourcc = cv2.VideoWriter_fourcc(*'mp4v')	
+		    outvid = cv2.VideoWriter(clip_path, fourcc, fps, (width,height))
+
+		    start_frame = new_groups[g][0]-buffer_frames
+		    if(start_frame < 0):
+			    start_frame = 0
+	    
+		    end_frame = new_groups[g][len(new_groups[g])-1]+buffer_frames
+		    if(end_frame >= nframes):
+			    end_frame = nframes-1;
+
+		    invid.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+		    s = "\"%s\", \"%s\", %d, %f, %d, %f, %d, %f, %.02f, %.02f, %.02f\n" %(filename, clip_path, start_frame, start_frame/fps, end_frame, end_frame/fps, end_frame-start_frame, (end_frame-start_frame)/fps, min_conf, max_conf, mean_conf)
+		    report_file.write(s)
+		    report_file.flush()
+		    print("CLIP %d: start=%d, end=%d" %(g,start_frame,end_frame))
+		    print("SAVING CLIP: ", clip_path, "...")
+		    for f in range(start_frame, end_frame):
+			    success, image = invid.read()
 			if(success):
 				outvid.write(label(image,f,fps))
 			else:
 				break
-		outvid.release()
+		    outvid.release()
 
-	end_time = time.time()
-	print("Clips saved in: %.02f seconds" %(end_time - start_time))
-	
-	invid.release()
+	    end_time = time.time()
+	    print("Clips saved in: %.02f seconds" %(end_time - start_time))
+	    
+	    invid.release()
+
+files = os.listdir(INPUT_DIR)
+ch = chunks(files,math.ceil(len(files)/threads))
+    
 	
 report_file.close()
 
