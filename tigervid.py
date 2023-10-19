@@ -10,13 +10,12 @@
 # Extracts video clips which include animals into destination directory
 # Writes summary log
 #
-# Usage:  python tigervid.py <INPUT_DIR> <OUTPUT_DIR> <MODEL_FILE> <NUM_FRAMES_BETWEEN_SAMPLES>
-#
 ####################################################################
 
 
 import os, sys, time
 import argparse
+import bisect
 import cv2
 from PIL import Image
 import torch
@@ -24,13 +23,14 @@ import glob
 import numpy as np
 import imageio
 from tqdm import tqdm	
+from functools import reduce
 from general import non_max_suppression
 
 DEFAULT_MODEL           = 'md_v5a.0.0.pt'
 DEFAULT_INTERVAL        = 30  # number of frames between samples
 DEFAULT_BUFFER_TIME     = 5   # number of seconds of video to include before first detection and after last detection
 DEFAULT_REPORT_FILENAME = "report.csv"
-DEFAULT_NPROCS          = 4
+DEFAULT_NPROCS          = 1
 DEFAULT_BATCH_SIZE      = 8
 
 
@@ -83,6 +83,11 @@ else:
 	    usegpu = False
 
 	torch.device(device)
+
+if (usegpu==False):
+	print("Using CPU.  Forcing batchsize=1")
+	args.batchsize = 1
+	
     
 
 
@@ -132,6 +137,14 @@ def split(a, n):
 	k, m = divmod(len(a), n)
 	return (a[i*k+min(i, m):(i+1)*k+min(i+1, m)] for i in range(n))
 
+def pairwise(iterable):
+	it = iter(iterable)
+	a = next(it, None)
+
+	for b in it:
+	    yield (a, b)
+	    a = b
+
 def grouper(iterable):
 	prev = None
 	group = []
@@ -172,8 +185,6 @@ report_file.write("ORIGINAL, CLIP, START_FRAME, START_TIME, END_FRAME, END_TIME,
 
 path = os.path.join(args.input, "*.mp4")
 
-# pre-allocate our inference buffer
-inference_buffer = np.empty((4096, 640, 640, 3), dtype=np.uint8)
 
 filecnt = 0
 for filename in glob.glob(path):
@@ -190,12 +201,17 @@ for filename in glob.glob(path):
 	(width,height) = size
 	buffer_frames = int(fps*args.buffer)
 
+	# pre-allocate our inference buffer
+	inference_buffer_size = (int(nframes/args.interval)+1,640,640,3)
+	inference_buffer = np.empty(inference_buffer_size, dtype=np.uint8)
+
 	print("\n")
 	print(" PROCESSING VIDEO:", filename)
 	print("     TOTAL FRAMES:", nframes)
 	print("              FPS:", fps)
 	print("         DURATION:", duration, "seconds")
 	print("       FRAME SIZE:", size)
+	print(" INFERENCE BUFFER:", inference_buffer_size, "-- (%.0f MB)" %((reduce((lambda x, y: x * y), inference_buffer_size))/(1024*1024)))
 	
 	print("\n")
 
@@ -214,6 +230,10 @@ for filename in glob.glob(path):
 	print("Sampling video...")
 	pbar = tqdm(range(nframes),ncols=100,unit=" frames")
 
+	#
+	# Sample frames from the video at the specified sampling interval
+	# and put in a buffer
+	#
 	start_time = time.time()
 	count = 0	
 	for i in pbar:
@@ -226,24 +246,24 @@ for filename in glob.glob(path):
 			break
 	end_time = time.time()
 
-	print("%d samples taken from video in %.02f seconds." %(count, (end_time-start_time)))
+	print("%d samples taken from video every %d frames in %.02f seconds." %(count, args.interval, (end_time-start_time)))
 	print("Now performing tiger detection...")
-	
 
 	nbatches = (count + args.batchsize - 1) // args.batchsize
-	#print("NBATCHES: ", nbatches)
 
 	start_time=time.time()
 
+	pbar = tqdm(range(nbatches),ncols=100,unit=" batches")
+
 	# Iterate over the array to copy batches
 	tiger_frames = {}	
-	for b in range(nbatches):
+	for b in pbar:
+	
 		start_idx = b * args.batchsize
 		end_idx = start_idx + args.batchsize
 		if(end_idx > count):
 			end_idx = count
 		batch_images = inference_buffer[start_idx:end_idx] 
-		#print(start_idx, end_idx, batch_images.shape)
 	
 		image_tensors = torch.from_numpy(batch_images).permute(0, 3, 1, 2).float() / 255.0  
 		detections_tensor = model(image_tensors)
@@ -255,20 +275,66 @@ for filename in glob.glob(path):
 			dn = d.cpu().detach().numpy()
 			if len(dn):
 				tiger_frames[frame_idx] = dn
+
+	del inference_buffer
 		
 	groups = dict(enumerate(grouper(tiger_frames.keys()), 0))
+
+	#
+	# Merge groups which overlap due to buffer_frames
+	#
+	extents = []
+	for g in groups:
+	    start_frame = groups[g][0]-buffer_frames
+	    if(start_frame < 0):
+		    start_frame = 0
+
+	    end_frame = groups[g][len(groups[g])-1]+buffer_frames
+	    if(end_frame >= nframes):
+		    end_frame = nframes-1
+    
+	    extents.append([start_frame,end_frame])
+
+	dels = []
+	for i in range(len(extents) - 1):
+		cur = extents[i]
+		nxt = extents[i+1]
+
+		if(cur[1] >= nxt[0]):
+		    extents[i+1][0]=cur[0]
+		    dels.append(i)
+
+	new_extents = []
+	cnt = 0
+	for i in range(len(extents)):
+		if(not i in dels):
+		    new_extents.append(extents[i])
+    
+
+	i = 0
+	new_groups = {}
+	tkeys = list(tiger_frames.keys())
+	for e in new_extents:
+		min_index = bisect.bisect_left(tkeys,  e[0])
+		max_index = bisect.bisect_right(tkeys, e[1])	
+
+		new_groups[i] = []
+		for c in range(min_index, max_index):
+			new_groups[i].append(tkeys[c])
+		
+		i+=1
 
 	end_time = time.time()
 
 	print("Tiger detection complete in %.02f seconds" %(end_time-start_time))
-	print("\n***IDENTIFIED %d CLIPS THAT INCLUDE TIGERS***\n" %(len(groups)))
+	print("\n***IDENTIFIED %d CLIPS THAT INCLUDE TIGERS***\n" %(len(new_groups)))
 
 	print("Saving clips...")
 
 	start_time = time.time()
-	for g in groups:
+	for g in new_groups:
 
-		min_conf, max_conf, mean_conf = confidence(groups[g], tiger_frames) 
+		min_conf, max_conf, mean_conf = confidence(new_groups[g], tiger_frames) 
 
 		fn = os.path.basename(filename)
 		clip_name = os.path.splitext(fn)[0] + "_{:03d}".format(g) + ".mp4"
@@ -277,17 +343,18 @@ for filename in glob.glob(path):
 		fourcc = cv2.VideoWriter_fourcc(*'mp4v')	
 		outvid = cv2.VideoWriter(clip_path, fourcc, fps, (width,height))
 
-		start_frame = groups[g][0]-buffer_frames
+		start_frame = new_groups[g][0]-buffer_frames
 		if(start_frame < 0):
 			start_frame = 0
 	
-		end_frame = groups[g][len(groups[g])-1]+buffer_frames
+		end_frame = new_groups[g][len(new_groups[g])-1]+buffer_frames
 		if(end_frame >= nframes):
 			end_frame = nframes-1;
 
 		invid.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
 		s = "\"%s\", \"%s\", %d, %f, %d, %f, %d, %f, %.02f, %.02f, %.02f\n" %(filename, clip_path, start_frame, start_frame/fps, end_frame, end_frame/fps, end_frame-start_frame, (end_frame-start_frame)/fps, min_conf, max_conf, mean_conf)
 		report_file.write(s)
+		report_file.flush()
 		print("CLIP %d: start=%d, end=%d" %(g,start_frame,end_frame))
 		print("SAVING CLIP: ", clip_path, "...")
 		for f in range(start_frame, end_frame):
