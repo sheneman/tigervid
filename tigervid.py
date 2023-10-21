@@ -439,8 +439,9 @@ def main():
 
 	clear_screen()	
 
-	print("\nDONE\n")
 	print("Total time to process %d videos: %.02f seconds" %(len(files), time.time()-all_start_time))
+	print("Report file saved to %s" %args.report)
+	print("\nDONE\n")
 
 
 if __name__ == '__main__':
