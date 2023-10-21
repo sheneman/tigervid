@@ -166,29 +166,38 @@ def chunks(files, n):
     n = max(1, n)
     return (files[i:i+n] for i in range(0, len(files), n))
 
-			
 
 def process_chunk(chunk, pid):
 
 	global args
-  
+
+	# lets pace ourselves to help avoid race conditions
 	if(pid==0): 
-	    time.sleep(3)
+	    time.sleep(16)
 	    clear_screen() 
+	else:
+	    time.sleep(pid)
 
 	pbar = tqdm(range(100),position=pid+1,ncols=100,unit=" frames",leave=False)
 
+	fcnt = 1
 	for filename in chunk:
 
 	    start_time = time.time()
 
-	    # Use imageio[ffmpeg] to determine the number of frames	
-	    v=imageio.get_reader(filename,  'ffmpeg')
-	    nframes  = v.count_frames()
-	    metadata = v.get_meta_data()
-	    fps = metadata['fps']
-	    duration = metadata['duration']
-	    size = metadata['size']
+	    # Use imageio[ffmpeg] to determine the number of frames	    
+	    while(True):
+		    try:
+			    v=imageio.get_reader(filename,  'ffmpeg')
+			    nframes  = v.count_frames()
+			    metadata = v.get_meta_data()
+			    fps = metadata['fps']
+			    duration = metadata['duration']
+			    size = metadata['size']
+			    break
+		    except:
+			    print("imageio timeout.  Trying again")
+
 	    (width,height) = size
 	    buffer_frames = int(fps*args.buffer)
 
@@ -219,7 +228,7 @@ def process_chunk(chunk, pid):
 	    #pbar.write(" INFERENCE BUFFER: %d -- (%.0f MB)" %(inference_buffer_size[0], ((reduce((lambda x, y: x * y), inference_buffer_size))/(1024*1024))))
 	    #pbar.write("*************************\n")
 
-	    pbar.set_description("Reading File: %s" %filename)
+	    pbar.set_description("pid=%d Reading File %d/%d: %s" %(pid,fcnt,len(chunk),filename))
 
 	    #
 	    # Sample frames from the video at the specified sampling interval
@@ -247,7 +256,7 @@ def process_chunk(chunk, pid):
 
 	    #pbar = tqdm(range(nbatches),position=1,ncols=100,unit=" batches")
 	    pbar.reset(total=nbatches*args.interval)
-	    pbar.set_description("AI Detection: %s" %filename)
+	    pbar.set_description("pid=%d AI Detection %d/%d: %s" %(pid,fcnt,len(chunk),filename))
 
 	    # Iterate over the array to copy batches
 	    tiger_frames = {}	
@@ -365,6 +374,7 @@ def process_chunk(chunk, pid):
 	    #pbar.write("Clips saved in: %.02f seconds" %(end_time - start_time))
 	    
 	    invid.release()
+	    fcnt += 1
 
 	pbar.close()
 
@@ -437,7 +447,7 @@ def main():
 
 	report_file.close()
 
-	clear_screen()	
+	#clear_screen()	
 
 	print("Total time to process %d videos: %.02f seconds" %(len(files), time.time()-all_start_time))
 	print("Report file saved to %s" %args.report)
