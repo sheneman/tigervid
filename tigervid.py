@@ -19,6 +19,7 @@ from multiprocessing import Pool, freeze_support, RLock
 import bisect
 import cv2
 import math
+import random
 from PIL import Image
 import torch
 import glob
@@ -170,8 +171,12 @@ def chunks(files, n):
 def process_chunk(chunk, pid):
 
 	global args
-    
-	pbar = tqdm(range(100),position=pid+1,ncols=100,unit=" frames")
+  
+	if(pid==0): 
+	    time.sleep(3)
+	    clear_screen() 
+
+	pbar = tqdm(range(100),position=pid+1,ncols=100,unit=" frames",leave=False)
 
 	for filename in chunk:
 
@@ -214,7 +219,7 @@ def process_chunk(chunk, pid):
 	    #pbar.write(" INFERENCE BUFFER: %d -- (%.0f MB)" %(inference_buffer_size[0], ((reduce((lambda x, y: x * y), inference_buffer_size))/(1024*1024))))
 	    #pbar.write("*************************\n")
 
-	    pbar.set_description("Reading %s" %filename)
+	    pbar.set_description("Reading File: %s" %filename)
 
 	    #
 	    # Sample frames from the video at the specified sampling interval
@@ -413,12 +418,13 @@ def main():
 
 	path = os.path.join(args.input, "*.mp4")
 	files = glob.glob(path)
+	random.shuffle(files)
 	ch = chunks(files,math.ceil(len(files)/args.jobs))
 
 	pool = Pool(processes=args.jobs, initargs=(RLock(),), initializer=tqdm.set_lock)
 	jobs = [pool.apply_async(process_chunk, args=(c,i,)) for i,c in enumerate(ch)]
 
-	clear_screen()	
+	#clear_screen()	
 	result_list = [job.get() for job in jobs]
 	pool.close()
 
