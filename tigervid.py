@@ -22,6 +22,7 @@ import math
 import random
 from PIL import Image
 import torch
+from torch.cuda.amp import autocast
 import glob
 import numpy as np
 import imageio
@@ -36,6 +37,10 @@ DEFAULT_BUFFER_TIME     = 5   # number of seconds of video to include before fir
 DEFAULT_REPORT_FILENAME = "report.csv"
 DEFAULT_NPROCS          = 1
 DEFAULT_BATCH_SIZE      = 8
+
+GPU_LOCKFILE		= ".gpulock"
+
+
 
 
 
@@ -102,6 +107,24 @@ if __name__ != '__main__':
 	#model = torch.hub.load('ultralytics/yolov5', 'yolov5s')
 	model.to(device)
 
+def gpulock_release():
+	if(os.path.isfile(GPU_LOCKFILE)):
+		os.remove(GPU_LOCKFILE) 
+
+def gpulock_set(pid):
+	gpulock = open(GPU_LOCKFILE, "w")
+	gpulock.write(str(pid)+"\n")
+	gpulock.flush()
+	gpulock.close()
+
+def gpulock_get():
+	try:
+		gpulock = open(GPU_LOCKFILE, "r")
+		pid = int(gpulock.readline())
+	except:
+		pid = -1
+
+	return pid
 
 def label(img, frame, fps):
 	s = "frame: %d, time: %s" %(frame, "{:0.3f}".format(frame/fps))
@@ -157,9 +180,11 @@ def confidence(group, frames):
 
 
 def clear_screen():
-    os.system('cls' if os.name == 'nt' else 'clear')
-    if(os.name != 'nt'):
-	    os.system('reset')
+	os.system('cls' if os.name == 'nt' else 'clear')
+
+def reset_screen():
+	if(os.name != 'nt'):
+		os.system('reset')
 
 
 def chunks(files, n):
@@ -194,9 +219,13 @@ def process_chunk(chunk, pid):
 			    fps = metadata['fps']
 			    duration = metadata['duration']
 			    size = metadata['size']
+
+			    del v
+
 			    break
 		    except:
 			    print("imageio timeout.  Trying again")
+			    time.sleep(1)
 
 	    (width,height) = size
 	    buffer_frames = int(fps*args.buffer)
@@ -256,6 +285,15 @@ def process_chunk(chunk, pid):
 
 	    #pbar = tqdm(range(nbatches),position=1,ncols=100,unit=" batches")
 	    pbar.reset(total=nbatches*args.interval)
+
+	    while(True):
+		    if (gpulock_get() < 0) or (gpulock_get() == pid):
+			    gpulock_set(pid) 
+			    break
+		    else:
+			    pbar.set_description("pid=%d    WAITING for GPU: %s" %(pid,fcnt,len(chunk),filename))
+			    time.sleep(0.5)
+
 	    pbar.set_description("pid=%d AI Detection %d/%d: %s" %(pid,fcnt,len(chunk),filename))
 
 	    # Iterate over the array to copy batches
@@ -268,10 +306,22 @@ def process_chunk(chunk, pid):
 			    end_idx = count
 		    batch_images = inference_buffer[start_idx:end_idx] 
 	    
-		    image_tensors = torch.from_numpy(batch_images).permute(0, 3, 1, 2).float() / 255.0  
-		    detections_tensor = model(image_tensors)
-	    
-		    detections = non_max_suppression(detections_tensor)
+		    it = torch.from_numpy(batch_images).permute(0, 3, 1, 2).float() / 255.0  
+    
+		    with(torch.no_grad()):
+			    with(autocast()):
+				    image_tensors = it.to(device)
+		    
+				    try:
+					    detections_tensor = model(image_tensors)
+					    detections = non_max_suppression(detections_tensor)
+				    except RuntimeError as e:
+					    if "CUDA out of memory" in str(e):
+						    print("CUDA out of memory error encountered.")
+						    exit(0)
+        
+
+		    del detections_tensor
 
 		    for i, d in enumerate(detections):
 			    frame_idx = (b*args.batchsize+i)*args.interval
@@ -279,9 +329,19 @@ def process_chunk(chunk, pid):
 			    if len(dn):
 				    tiger_frames[frame_idx] = dn
 
-		    pbar.update(args.interval)
+		    del detections
+    
+		    if(usegpu):
+			    torch.cuda.empty_cache()
 
+		    pbar.update(args.interval)
+	    
 	    del inference_buffer
+
+	    if(usegpu==True):
+		    torch.cuda.empty_cache()
+
+	    gpulock_release()
 		    
 	    groups = dict(enumerate(grouper(tiger_frames.keys()), 0))
 
@@ -334,11 +394,11 @@ def process_chunk(chunk, pid):
 	    #pbar.write("Tiger detection complete in %.02f seconds" %(end_time-start_time))
 	    #pbar.write("***IDENTIFIED %d CLIPS THAT INCLUDE TIGERS***" %(len(new_groups)))
 
-	    #pbar.write("Saving clips...")
 
 	    start_time = time.time()
 	    return_list = []
-	    for g in new_groups:
+	    for i,g in enumerate(new_groups):
+		    pbar.set_description("pid=%d  Saving Clip %d/%d: %s" %(pid,i+1,len(new_groups),filename))
 
 		    min_conf, max_conf, mean_conf = confidence(new_groups[g], tiger_frames) 
 
@@ -434,9 +494,14 @@ def main():
 	pool = Pool(processes=args.jobs, initargs=(RLock(),), initializer=tqdm.set_lock)
 	jobs = [pool.apply_async(process_chunk, args=(c,i,)) for i,c in enumerate(ch)]
 
+	if(usegpu==True):
+		torch.cuda.empty_cache()
+
 	#clear_screen()	
 	result_list = [job.get() for job in jobs]
 	pool.close()
+
+	print(result_list)
 
 	report_file.write("ORIGINAL, CLIP, START_FRAME, START_TIME, END_FRAME, END_TIME, NUM FRAMES, DURATION, MIN_CONF, MAX_CONF, MEAN_CONF\n")
 	for r in result_list:
@@ -447,7 +512,8 @@ def main():
 
 	report_file.close()
 
-	#clear_screen()	
+	clear_screen()	
+	reset_screen()	
 
 	print("Total time to process %d videos: %.02f seconds" %(len(files), time.time()-all_start_time))
 	print("Report file saved to %s" %args.report)
@@ -455,6 +521,7 @@ def main():
 
 
 if __name__ == '__main__':
+	gpulock_release()
 	torch.multiprocessing.set_start_method('spawn')
 	main()
 
