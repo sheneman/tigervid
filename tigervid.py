@@ -47,7 +47,7 @@ parser.add_argument('-m', '--model', default=DEFAULT_MODEL, help='Path to the Py
 parser.add_argument('-i', '--interval', type=int, default=DEFAULT_INTERVAL, help='Number of frames to read between sampling with AI (DEFAULT: '+str(DEFAULT_INTERVAL)+')')
 parser.add_argument('-b', '--buffer', type=int, default=DEFAULT_BUFFER_TIME, help='Number of seconds to prepend and append to clip (DEFAULT: '+str(DEFAULT_BUFFER_TIME)+')')
 parser.add_argument('-r', '--report', default=DEFAULT_REPORT_FILENAME, help='Name of report metadata (DEFAULT: '+DEFAULT_REPORT_FILENAME+')')
-parser.add_argument('-p', '--processes', type=int, default=DEFAULT_NPROCS, help='Number of concurrent (parallel) processes (DEFAULT: '+str(DEFAULT_NPROCS)+')')
+parser.add_argument('-j', '--jobs', type=int, default=DEFAULT_NPROCS, help='Number of concurrent (parallel) processes (DEFAULT: '+str(DEFAULT_NPROCS)+')')
 parser.add_argument('-s', '--batchsize', type=int, default=DEFAULT_BATCH_SIZE, help='The batch size for inference (DEFAULT: '+str(DEFAULT_BATCH_SIZE)+')')
 
 group = parser.add_mutually_exclusive_group()
@@ -101,7 +101,6 @@ if __name__ != '__main__':
 	#model = torch.hub.load('ultralytics/yolov5', 'yolov5s')
 	model.to(device)
 
-report_file = open(args.report, "w")
 
 def label(img, frame, fps):
 	s = "frame: %d, time: %s" %(frame, "{:0.3f}".format(frame/fps))
@@ -172,8 +171,7 @@ def process_chunk(chunk, pid):
 
 	global args
     
-	for f in chunk:
-	    print(f)
+	pbar = tqdm(range(100),position=pid+1,ncols=100,unit=" frames")
 
 	for filename in chunk:
 
@@ -193,22 +191,11 @@ def process_chunk(chunk, pid):
 	    inference_buffer_size = (int(nframes/args.interval)+1,640,640,3)
 	    inference_buffer = np.empty(inference_buffer_size, dtype=np.uint8)
 
-	    print("\n")
-	    print(" PROCESSING VIDEO:", filename)
-	    print("     TOTAL FRAMES:", nframes)
-	    print("              FPS:", fps)
-	    print("         DURATION:", duration, "seconds")
-	    print("       FRAME SIZE:", size)
-	    print(" INFERENCE BUFFER:", inference_buffer_size, "-- (%.0f MB)" %((reduce((lambda x, y: x * y), inference_buffer_size))/(1024*1024)))
-	    
-	    print("\n")
-
 	    try:
 		    invid = cv2.VideoCapture(filename)
 	    except:
 		    print("Could not read video file: ", filename, " skipping...")
 		    continue
-
 
 	    count        = 0
 	    tiger_frames = 0
@@ -217,7 +204,17 @@ def process_chunk(chunk, pid):
 	    nbatches = (math.ceil(nframes/args.interval))
 
 	    #print("Sampling video...")
-	    pbar = tqdm(range(nframes+nbatches*args.interval),position=pid+1,ncols=100,unit=" frames")
+	    pbar.reset(total=nframes)
+
+	    #pbar.write(" PROCESSING VIDEO: %s" %filename)
+	    #pbar.write("     TOTAL FRAMES: %d" %nframes)
+	    #pbar.write("              FPS: %d" %fps)
+	    #pbar.write("         DURATION: %f seconds"  %duration)
+	    #pbar.write("       FRAME SIZE: %dx%d" %(size[0],size[1]))
+	    #pbar.write(" INFERENCE BUFFER: %d -- (%.0f MB)" %(inference_buffer_size[0], ((reduce((lambda x, y: x * y), inference_buffer_size))/(1024*1024))))
+	    #pbar.write("*************************\n")
+
+	    pbar.set_description("Reading %s" %filename)
 
 	    #
 	    # Sample frames from the video at the specified sampling interval
@@ -241,12 +238,11 @@ def process_chunk(chunk, pid):
 	    #print("%d samples taken from video every %d frames in %.02f seconds." %(count, args.interval, (end_time-start_time)))
 	    #print("Now performing tiger detection...")
 
-	    #nbatches = (count + args.batchsize - 1) // args.batchsize
-
-    
 	    start_time=time.time()
 
 	    #pbar = tqdm(range(nbatches),position=1,ncols=100,unit=" batches")
+	    pbar.reset(total=nbatches*args.interval)
+	    pbar.set_description("AI Detection: %s" %filename)
 
 	    # Iterate over the array to copy batches
 	    tiger_frames = {}	
@@ -321,12 +317,13 @@ def process_chunk(chunk, pid):
 
 	    end_time = time.time()
 
-	    pbar.write("Tiger detection complete in %.02f seconds" %(end_time-start_time))
-	    pbar.write("***IDENTIFIED %d CLIPS THAT INCLUDE TIGERS***" %(len(new_groups)))
+	    #pbar.write("Tiger detection complete in %.02f seconds" %(end_time-start_time))
+	    #pbar.write("***IDENTIFIED %d CLIPS THAT INCLUDE TIGERS***" %(len(new_groups)))
 
-	    pbar.write("Saving clips...")
+	    #pbar.write("Saving clips...")
 
 	    start_time = time.time()
+	    return_list = []
 	    for g in new_groups:
 
 		    min_conf, max_conf, mean_conf = confidence(new_groups[g], tiger_frames) 
@@ -348,10 +345,8 @@ def process_chunk(chunk, pid):
 
 		    invid.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
 		    s = "\"%s\", \"%s\", %d, %f, %d, %f, %d, %f, %.02f, %.02f, %.02f\n" %(filename, clip_path, start_frame, start_frame/fps, end_frame, end_frame/fps, end_frame-start_frame, (end_frame-start_frame)/fps, min_conf, max_conf, mean_conf)
-		    report_file.write(s)
-		    report_file.flush()
-		    pbar.write("CLIP %d: start=%d, end=%d" %(g,start_frame,end_frame))
-		    pbar.write("SAVING CLIP: %s..." %clip_path)
+		    #pbar.write("CLIP %d: start=%d, end=%d" %(g,start_frame,end_frame))
+		    #pbar.write("SAVING CLIP: %s..." %clip_path)
 		    for f in range(start_frame, end_frame):
 			    success, image = invid.read()
 			    if(success):
@@ -359,13 +354,17 @@ def process_chunk(chunk, pid):
 			    else:
 				    break
 		    outvid.release()
+		    return_list.append([filename, clip_path, fps, start_frame, end_frame, min_conf, max_conf, mean_conf])
 
 	    end_time = time.time()
-	    pbar.write("Clips saved in: %.02f seconds" %(end_time - start_time))
+	    #pbar.write("Clips saved in: %.02f seconds" %(end_time - start_time))
 	    
 	    invid.release()
 
-	    pbar.close()
+	pbar.close()
+
+	return(return_list)
+
 
 
 
@@ -379,7 +378,7 @@ def main():
 
 	freeze_support()  # For Windows support - multiprocessing with tqdm
 
-	report_file.write("ORIGINAL, CLIP, START_FRAME, START_TIME, END_FRAME, END_TIME, NUM FRAMES, DURATION, MIN_CONF, MAX_CONF, MEAN_CONF\n")
+	report_file = open(args.report, "w")
 
 
 	all_start_time = time.time()
@@ -407,26 +406,28 @@ def main():
 	print("    MODEL WEIGHTS: ", args.model)
 	print("SAMPLING INTERVAL: ", args.interval, "frames")
 	print("  BUFFER DURATION: ", args.buffer, "seconds")
-	print(" CONCURRENT PROCS: ", args.processes)
+	print(" CONCURRENT PROCS: ", args.jobs)
 	print("       BATCH SIZE: ", args.batchsize)
 	print("          USE GPU: ", usegpu)
 	print("*********************************************\n\n")
 
 	path = os.path.join(args.input, "*.mp4")
 	files = glob.glob(path)
-	ch = chunks(files,math.ceil(len(files)/args.processes))
+	ch = chunks(files,math.ceil(len(files)/args.jobs))
 
-	#with Pool(args.processes) as p:
-	#	results = p.map(process_chunk, ch)
-
-	pool = Pool(processes=args.processes, initargs=(RLock(),), initializer=tqdm.set_lock)
-	#jobs = [pool.apply_async(process_chunk, args=ch) for i, n in enumerate(argument_list)]
-	#jobs = [pool.apply_async(process_chunk, c) for c in enumerate(ch)]
-
+	pool = Pool(processes=args.jobs, initargs=(RLock(),), initializer=tqdm.set_lock)
 	jobs = [pool.apply_async(process_chunk, args=(c,i,)) for i,c in enumerate(ch)]
-	
-	pool.close()
+
+	clear_screen()	
 	result_list = [job.get() for job in jobs]
+	pool.close()
+
+	report_file.write("ORIGINAL, CLIP, START_FRAME, START_TIME, END_FRAME, END_TIME, NUM FRAMES, DURATION, MIN_CONF, MAX_CONF, MEAN_CONF\n")
+	for r in result_list:
+		for x in r:
+			filename,clip_path,fps,start_frame,end_frame,min_conf,max_conf,mean_conf = x
+			s = "\"%s\", \"%s\", %d, %f, %d, %f, %d, %f, %.02f, %.02f, %.02f\n" %(filename, clip_path, start_frame, start_frame/fps, end_frame, end_frame/fps, end_frame-start_frame, (end_frame-start_frame)/fps, min_conf, max_conf, mean_conf)
+			report_file.write(s)	
 
 	report_file.close()
 
@@ -434,7 +435,6 @@ def main():
 
 	print("\nDONE\n")
 	print("Total time to process %d videos: %.02f seconds" %(len(files), time.time()-all_start_time))
-
 
 
 if __name__ == '__main__':
