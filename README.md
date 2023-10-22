@@ -1,5 +1,5 @@
 # TigerVid
-## Scans video looking for frames which include animals, produce clips and a final report
+## Scans video looking for frames which include animals, extracts video clips and a final report
 
 ## Usage  
 
@@ -53,7 +53,10 @@ pip install requests
 
 **or** pip install -r requirements.txt  
 
-**A Note on GPUs**: This tool uses deep learning methods to detect animals, specifically using [PyTorch](https://pytorch.org) and [YOLOv5](https://github.com/ultralytics/yolov5). A CUDA-compatible GPU is recommended but not required.  
+**A Note on GPUs**: This tool uses deep learning methods to detect animals, specifically using [PyTorch](https://pytorch.org) and [YOLOv5](https://github.com/ultralytics/yolov5). A CUDA-compatible GPU is recommended but not required. Currently TigerVid will only use one GPU, even if your system has multiple GPUs. 
+
+## Optimizing Settings
+This tool is intended to allow the user to optimize the runtime settings to optimize performance.  Optimal settings will depend on a variety of factors, including whether or not you have a GPU, how much GPU RAM you have, how many CPU cores are available, and how fast your storage is.  Play around with the settings until you acheive optimal speeds for your hardware.  
 
 ## Interpreting the results
 
@@ -70,10 +73,10 @@ The reports file is a CSV file containing the following columns:
 **ORIGINAL, CLIP, START_FRAME, START_TIME, END_FRAME, END_TIME, NUM FRAMES, DURATION, CONFIDENCE_MIN, CONFIDENCE_MAX, CONFIDENCE MEAN**  
 
 For Example, this report shows one source video file produced 2 clips and another source video produced one clip:  
-
+```
 ORIGINAL, CLIP, START_FRAME, START_TIME, END_FRAME, END_TIME, NUM FRAMES, DURATION, MIN_CONF, MAX_CONF, MEAN_CONF
 "inputs/d.mp4", "outputs/d_000.mp4", 60, 2.000000, 540, 18.000000, 480, 16.000000, 0.67, 0.91, 0.81
 "inputs/d.mp4", "outputs/d_001.mp4", 660, 22.000000, 1200, 40.000000, 540, 18.000000, 0.32, 0.90, 0.71
 "inputs/y.mp4", "outputs/y_000.mp4", 6966, 241.539528, 7464, 258.807212, 498, 17.267684, 0.28, 0.92, 0.67
-
+```
 
