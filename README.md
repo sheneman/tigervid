@@ -8,24 +8,24 @@ usage: tigervid [-h] [-m MODEL] [-i INTERVAL] [-b BUFFER] [-r REPORT] [-j JOBS] 
 Analyze videos and extract clips and metadata which contain animals.  
   
 positional arguments:  
-> INPUT_DIR             Path to input directory containing MP4 videos  
-> OUTPUT_DIR            Path to output directory for clips and metadatas  
+* INPUT_DIR             Path to input directory containing MP4 videos  
+* OUTPUT_DIR            Path to output directory for clips and metadatas  
   
 optional arguments:  
-> -h, --help            show this help message and exit  
-> -m MODEL, --model MODEL  
+* -h, --help            show this help message and exit  
+* -m MODEL, --model MODEL  
                       Path to the PyTorch model weights file (DEFAULT: md_v5a.0.0.pt)  
-> -i INTERVAL, --interval INTERVAL  
+* -i INTERVAL, --interval INTERVAL  
                         Number of frames to read between sampling with AI (DEFAULT: 30)  
-> -b BUFFER, --buffer BUFFER  
+* -b BUFFER, --buffer BUFFER  
                         Number of seconds to prepend and append to clip (DEFAULT: 5)  
-> -r REPORT, --report REPORT  
+* -r REPORT, --report REPORT  
                         Name of report metadata (DEFAULT: report.csv)  
-> -j JOBS, --jobs JOBS  Number of concurrent (parallel) processes (DEFAULT: 1)  
-> -s BATCHSIZE, --batchsize BATCHSIZE  
+* -j JOBS, --jobs JOBS  Number of concurrent (parallel) processes (DEFAULT: 1)  
+* -s BATCHSIZE, --batchsize BATCHSIZE  
                         The batch size for inference (DEFAULT: 8)  
-> -g, --gpu             Use GPU if available (DEFAULT)  
-> -c, --cpu             Use CPU only  
+* -g, --gpu             Use GPU if available (DEFAULT)  
+* -c, --cpu             Use CPU only  
 
 
 
