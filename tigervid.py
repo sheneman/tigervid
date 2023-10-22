@@ -39,6 +39,7 @@ DEFAULT_NPROCS          = 1
 DEFAULT_BATCH_SIZE      = 8
 
 GPU_LOCKFILE		= ".gpulock"
+REPORT_LOCKFILE		= ".reportlock"
 
 
 
@@ -103,7 +104,7 @@ if (usegpu==False):
 	args.batchsize = 1
 
 if __name__ != '__main__':
-	model = torch.hub.load('ultralytics/yolov5', 'custom', path=args.model)
+	model = torch.hub.load('ultralytics/yolov5', 'custom', path=args.model,_verbose=False)
 	#model = torch.hub.load('ultralytics/yolov5', 'yolov5s')
 	model.to(device)
 
@@ -125,6 +126,64 @@ def gpulock_get():
 		pid = -1
 
 	return pid
+
+
+def report(pid, report_list):
+	# get the lock and wait for it if we have to
+	cnt = 0
+	while(True):
+		rl = reportlock_get()
+		if (rl < 0) or (rl == pid):
+			reportlock_set(pid) 
+			break
+		else:
+			time.sleep(0.25)
+
+			if(cnt>100):
+				print("Error:  Could not acquire report lock file %s" %(REPORT_LOCKFILE))
+				exit(-1)
+
+			cnt+=1
+
+	try:
+		report_file = open(args.report, "a")
+	except:
+		print("Error:  Could not open report file %s for writing in report()" %(args.report))
+		exit(-1)
+
+	filename,clip_path,fps,start_frame,end_frame,min_conf,max_conf,mean_conf = report_list
+	s = "\"%s\", \"%s\", %d, %f, %d, %f, %d, %f, %.02f, %.02f, %.02f\n" %(filename, clip_path, start_frame, start_frame/fps, end_frame, end_frame/fps, end_frame-start_frame, (end_frame-start_frame)/fps, min_conf, max_conf, mean_conf)
+
+	print(s)
+
+	report_file.write(s)	
+
+	report_file.flush()
+	report_file.close()
+
+	reportlock_release()
+	
+
+
+def reportlock_release():
+	if(os.path.isfile(REPORT_LOCKFILE)):
+		os.remove(REPORT_LOCKFILE) 
+
+def reportlock_set(pid):
+	reportlock = open(REPORT_LOCKFILE, "w")
+	reportlock.write(str(pid)+"\n")
+	reportlock.flush()
+	reportlock.close()
+
+def reportlock_get():
+	try:
+		reportlock = open(REPORT_LOCKFILE, "r")
+		pid = int(reportlock.readline())
+	except:
+		pid = -1
+
+	return pid
+
 
 def label(img, frame, fps):
 	s = "frame: %d, time: %s" %(frame, "{:0.3f}".format(frame/fps))
@@ -208,8 +267,6 @@ def process_chunk(chunk, pid):
 	fcnt = 1
 	for filename in chunk:
 
-	    start_time = time.time()
-
 	    # Use imageio[ffmpeg] to determine the number of frames	    
 	    while(True):
 		    try:
@@ -263,7 +320,6 @@ def process_chunk(chunk, pid):
 	    # Sample frames from the video at the specified sampling interval
 	    # and put in a buffer
 	    #
-	    start_time = time.time()
 	    count = 0	
 	    for i in range(nframes):
 		    success, image = invid.read()
@@ -276,14 +332,7 @@ def process_chunk(chunk, pid):
 	    
 		    pbar.update(1)
 
-	    end_time = time.time()
 
-	    #print("%d samples taken from video every %d frames in %.02f seconds." %(count, args.interval, (end_time-start_time)))
-	    #print("Now performing tiger detection...")
-
-	    start_time=time.time()
-
-	    #pbar = tqdm(range(nbatches),position=1,ncols=100,unit=" batches")
 	    pbar.reset(total=nbatches*args.interval)
 
 	    while(True):
@@ -291,7 +340,7 @@ def process_chunk(chunk, pid):
 			    gpulock_set(pid) 
 			    break
 		    else:
-			    pbar.set_description("pid=%d    WAITING for GPU: %s" %(pid,fcnt,len(chunk),filename))
+			    pbar.set_description("pid=%d  WAITING for GPU: %s" %(pid,filename))
 			    time.sleep(0.5)
 
 	    pbar.set_description("pid=%d AI Detection %d/%d: %s" %(pid,fcnt,len(chunk),filename))
@@ -389,13 +438,7 @@ def process_chunk(chunk, pid):
 		    
 		    i+=1
 
-	    end_time = time.time()
 
-	    #pbar.write("Tiger detection complete in %.02f seconds" %(end_time-start_time))
-	    #pbar.write("***IDENTIFIED %d CLIPS THAT INCLUDE TIGERS***" %(len(new_groups)))
-
-
-	    start_time = time.time()
 	    return_list = []
 	    for i,g in enumerate(new_groups):
 		    pbar.set_description("pid=%d  Saving Clip %d/%d: %s" %(pid,i+1,len(new_groups),filename))
@@ -418,9 +461,6 @@ def process_chunk(chunk, pid):
 			    end_frame = nframes-1;
 
 		    invid.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-		    s = "\"%s\", \"%s\", %d, %f, %d, %f, %d, %f, %.02f, %.02f, %.02f\n" %(filename, clip_path, start_frame, start_frame/fps, end_frame, end_frame/fps, end_frame-start_frame, (end_frame-start_frame)/fps, min_conf, max_conf, mean_conf)
-		    #pbar.write("CLIP %d: start=%d, end=%d" %(g,start_frame,end_frame))
-		    #pbar.write("SAVING CLIP: %s..." %clip_path)
 		    for f in range(start_frame, end_frame):
 			    success, image = invid.read()
 			    if(success):
@@ -428,17 +468,14 @@ def process_chunk(chunk, pid):
 			    else:
 				    break
 		    outvid.release()
-		    return_list.append([filename, clip_path, fps, start_frame, end_frame, min_conf, max_conf, mean_conf])
 
-	    end_time = time.time()
-	    #pbar.write("Clips saved in: %.02f seconds" %(end_time - start_time))
+		    report(pid, [filename, clip_path, fps, start_frame, end_frame, min_conf, max_conf, mean_conf])
 	    
 	    invid.release()
 	    fcnt += 1
 
 	pbar.close()
 
-	return(return_list)
 
 
 
@@ -451,12 +488,24 @@ def process_chunk(chunk, pid):
 #
 def main():
 
+	all_start_time = time.time()
+
 	freeze_support()  # For Windows support - multiprocessing with tqdm
 
-	report_file = open(args.report, "w")
+	# release our lock files before starting
+	gpulock_release()
+	reportlock_release()
 
+	try:
+		report_file = open(args.report, "w")
+	except:
+		print("Error: Could not open report file %s in main()" %(args.report))
+		exit(-1)
 
-	all_start_time = time.time()
+	report_file.write("ORIGINAL, CLIP, START_FRAME, START_TIME, END_FRAME, END_TIME, NUM FRAMES, DURATION, MIN_CONF, MAX_CONF, MEAN_CONF\n")
+	report_file.flush()
+	report_file.close()
+
 
 	print('''
 	****************************************************
@@ -497,23 +546,14 @@ def main():
 	if(usegpu==True):
 		torch.cuda.empty_cache()
 
-	#clear_screen()	
-	result_list = [job.get() for job in jobs]
+	r = [job.get() for job in jobs]
 	pool.close()
-
-	print(result_list)
-
-	report_file.write("ORIGINAL, CLIP, START_FRAME, START_TIME, END_FRAME, END_TIME, NUM FRAMES, DURATION, MIN_CONF, MAX_CONF, MEAN_CONF\n")
-	for r in result_list:
-		for x in r:
-			filename,clip_path,fps,start_frame,end_frame,min_conf,max_conf,mean_conf = x
-			s = "\"%s\", \"%s\", %d, %f, %d, %f, %d, %f, %.02f, %.02f, %.02f\n" %(filename, clip_path, start_frame, start_frame/fps, end_frame, end_frame/fps, end_frame-start_frame, (end_frame-start_frame)/fps, min_conf, max_conf, mean_conf)
-			report_file.write(s)	
-
-	report_file.close()
 
 	clear_screen()	
 	reset_screen()	
+    
+	gpulock_release()
+	reportlock_release()
 
 	print("Total time to process %d videos: %.02f seconds" %(len(files), time.time()-all_start_time))
 	print("Report file saved to %s" %args.report)
@@ -521,7 +561,9 @@ def main():
 
 
 if __name__ == '__main__':
-	gpulock_release()
+
+
 	torch.multiprocessing.set_start_method('spawn')
+
 	main()
 

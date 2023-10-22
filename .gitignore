@@ -13,3 +13,5 @@ md_v5a.0.0.pt
 venv/
 *.bup
 .*swp
+.gpulock
+.reportlock
