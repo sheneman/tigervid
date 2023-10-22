@@ -154,8 +154,6 @@ def report(pid, report_list):
 	filename,clip_path,fps,start_frame,end_frame,min_conf,max_conf,mean_conf = report_list
 	s = "\"%s\", \"%s\", %d, %f, %d, %f, %d, %f, %.02f, %.02f, %.02f\n" %(filename, clip_path, start_frame, start_frame/fps, end_frame, end_frame/fps, end_frame-start_frame, (end_frame-start_frame)/fps, min_conf, max_conf, mean_conf)
 
-	print(s)
-
 	report_file.write(s)	
 
 	report_file.flush()
