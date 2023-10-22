@@ -1,7 +1,10 @@
 certifi==2023.7.22
 charset-normalizer==3.3.0
+cmake==3.27.6
+colorlog==6.7.0
 contourpy==1.1.1
 cycler==0.12.1
+Cython==3.0.3
 filelock==3.12.4
 fonttools==4.43.1
 fsspec==2023.9.2
@@ -13,6 +16,7 @@ imageio-ffmpeg==0.4.9
 importlib-resources==6.1.0
 Jinja2==3.1.2
 kiwisolver==1.4.5
+lit==17.0.2
 MarkupSafe==2.1.3
 matplotlib==3.7.3
 mpmath==1.3.0
@@ -47,10 +51,10 @@ six==1.16.0
 smmap==5.0.1
 sympy==1.12
 thop==0.1.1.post2209072238
-torch==2.1.0
-torchvision==0.16.0
+torch @ file:///mnt/ceph/sheneman/src/tiger/tigervid/torch-2.0.1%2Bcu118-cp38-cp38-linux_x86_64.whl#sha256=2ce38a6e4ea7c4b7f5baa51e65243a5f687f6e19ab7915ba5b2a431105f50bbe
+torchvision @ file:///mnt/ceph/sheneman/src/tiger/tigervid/torchvision-0.15.2%2Bcu118-cp38-cp38-linux_x86_64.whl#sha256=af6807d5e599fe5381c916235a5581407e850eb77c3d43899f37a1511ff81cc0
 tqdm==4.66.1
-triton==2.1.0
+triton==2.0.0
 typing_extensions==4.8.0
 tzdata==2023.3
 ultralytics==8.0.195
