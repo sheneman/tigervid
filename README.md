@@ -1,13 +1,31 @@
 # TigerVid
 ## Scans video looking for frames which include animals, produce clips and a final report
+  
+usage: tigervid [-h] [-m MODEL] [-i INTERVAL] [-b BUFFER] [-r REPORT] [-j JOBS] [-s BATCHSIZE] [-g | -c] INPUT_DIR OUTPUT_DIR  
+  
+Analyze videos and extract clips and metadata which contain animals.  
+  
+positional arguments:  
+  INPUT_DIR             Path to input directory containing MP4 videos  
+  OUTPUT_DIR            Path to output directory for clips and metadatas  
+  
+optional arguments:  
+  -h, --help            show this help message and exit  
+  -m MODEL, --model MODEL  
+                        Path to the PyTorch model weights file (DEFAULT: md_v5a.0.0.pt)  
+  -i INTERVAL, --interval INTERVAL  
+                        Number of frames to read between sampling with AI (DEFAULT: 30)  
+  -b BUFFER, --buffer BUFFER  
+                        Number of seconds to prepend and append to clip (DEFAULT: 5)  
+  -r REPORT, --report REPORT  
+                        Name of report metadata (DEFAULT: report.csv)  
+  -j JOBS, --jobs JOBS  Number of concurrent (parallel) processes (DEFAULT: 1)  
+  -s BATCHSIZE, --batchsize BATCHSIZE  
+                        The batch size for inference (DEFAULT: 8)  
+  -g, --gpu             Use GPU if available (DEFAULT)  
+  -c, --cpu             Use CPU only  
 
-Usage: python tigervid.py <INPUT_DIR> <OUTPUT_DIR> <MODEL_PATH> <SAMPLE_INTERVAL>
 
-Where:  
-  * **<INPUT_DIR>** is a single directory containing one or more **MP4** videos to scan  
-  * **<OUTPUT_DIR>** is the directory that will contain the extracted clips and final report  
-  * **<MODEL_PATH>** is the path to a YOLOv5 detection model weights file (e.g. [MegaDetector] (https://github.com/microsoft/CameraTraps))
-  * **<SAMPLE_INTERVAL>** is the number of video frames.  I recommend using 30, which is often about 1 second of video 
 
 ## Installation
 
