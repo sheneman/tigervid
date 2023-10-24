@@ -13,12 +13,14 @@
 ####################################################################
 
 
-import os, sys, time
+import os, sys, time, pathlib
 import argparse
 from multiprocessing import Pool, freeze_support, RLock
 import bisect
 import cv2
+import uuid
 import math
+import logging
 import random
 from PIL import Image
 import torch
@@ -38,11 +40,7 @@ DEFAULT_REPORT_FILENAME = "report.csv"
 DEFAULT_NPROCS          = 1
 DEFAULT_BATCH_SIZE      = 8
 
-GPU_LOCKFILE		= ".gpulock"
-REPORT_LOCKFILE		= ".reportlock"
-
-
-
+STALE_LOCK_CLEANUP	= 1 # hour
 
 
 parser = argparse.ArgumentParser(prog='tigervid', description='Analyze videos and extract clips and metadata which contain animals.')
@@ -104,43 +102,38 @@ if (usegpu==False):
 	args.batchsize = 1
 
 if __name__ != '__main__':
-	model = torch.hub.load('ultralytics/yolov5', 'custom', path=args.model,_verbose=False)
-	#model = torch.hub.load('ultralytics/yolov5', 'yolov5s')
+	logging.getLogger('torch.hub').setLevel(logging.ERROR)
+	model = torch.hub.load('ultralytics/yolov5', 'custom', path=args.model, _verbose=False, verbose=False)
 	model.to(device)
 
-def gpulock_release():
-	if(os.path.isfile(GPU_LOCKFILE)):
-		os.remove(GPU_LOCKFILE) 
 
-def gpulock_set(pid):
-	gpulock = open(GPU_LOCKFILE, "w")
-	gpulock.write(str(pid)+"\n")
-	gpulock.flush()
-	gpulock.close()
+def stale_lock_cleanup():
+	curr_time = time.time()
 
-def gpulock_get():
-	try:
-		gpulock = open(GPU_LOCKFILE, "r")
-		pid = int(gpulock.readline())
-	except:
-		pid = -1
-
-	return pid
+	files = glob.glob(".*.lck")
+	for f in files:
+		p = pathlib.Path(f)
+		st = p.stat()
+		if(curr_time - st.st_mtime > 60*60*STALE_LOCK_CLEANUP):
+			print("Removing stale lock file: ", f)
+			os.remove(f)
 
 
-def report(pid, report_list):
+
+
+def report(report_lockfile, pid, report_list):
 	# get the lock and wait for it if we have to
 	cnt = 0
 	while(True):
-		rl = reportlock_get()
+		rl = lock_get(report_lockfile)
 		if (rl < 0) or (rl == pid):
-			reportlock_set(pid) 
+			lock_set(report_lockfile, pid) 
 			break
 		else:
 			time.sleep(0.25)
 
 			if(cnt>100):
-				print("Error:  Could not acquire report lock file %s" %(REPORT_LOCKFILE))
+				print("Error:  Could not acquire report lock file %s" %(report_lockfile))
 				exit(-1)
 
 			cnt+=1
@@ -159,24 +152,33 @@ def report(pid, report_list):
 	report_file.flush()
 	report_file.close()
 
-	reportlock_release()
-	
+	lock_release(report_lockfile, pid)
 
 
-def reportlock_release():
-	if(os.path.isfile(REPORT_LOCKFILE)):
-		os.remove(REPORT_LOCKFILE) 
+def locknames(session):
+	gpu_lockfile    = ".gpu_"+session+".lck"
+	report_lockfile = ".rpt_"+session+".lck"		
 
-def reportlock_set(pid):
-	reportlock = open(REPORT_LOCKFILE, "w")
-	reportlock.write(str(pid)+"\n")
-	reportlock.flush()
-	reportlock.close()
+	return(gpu_lockfile, report_lockfile)
 
-def reportlock_get():
+
+
+def lock_release(lockfile, pid):
+	if(os.path.isfile(lockfile)):
+		os.remove(lockfile) 
+
+
+def lock_set(lockfile, pid):
+	lock = open(lockfile, "w")
+	lock.write(str(pid)+"\n")
+	lock.flush()
+	lock.close()
+
+
+def lock_get(lockfile):
 	try:
-		reportlock = open(REPORT_LOCKFILE, "r")
-		pid = int(reportlock.readline())
+		lock = open(lockfile, "r")
+		pid = int(lock.readline())
 	except:
 		pid = -1
 
@@ -244,26 +246,43 @@ def reset_screen():
 		os.system('reset')
 
 
-def chunks(files, n):
-    n = max(1, n)
-    return (files[i:i+n] for i in range(0, len(files), n))
+
+def chunks(filenames, n):
+    if n <= 0:
+        return []
+
+    chunk_size = len(filenames) // n
+    
+    remainder = len(filenames) % n
+    
+    chunks = []
+    start_index = 0
+
+    for i in range(n):
+        end_index = start_index + chunk_size + (1 if i < remainder else 0)
+        chunks.append(filenames[start_index:end_index])
+        start_index = end_index
+
+    return chunks
 
 
-def process_chunk(chunk, pid):
+
+
+def process_chunk(session, pid, chunk):
 
 	global args
 
-	# lets pace ourselves to help avoid race conditions
-	if(pid==0): 
-	    time.sleep(16)
-	    clear_screen() 
-	else:
-	    time.sleep(pid)
+	gpu_lockfile, report_lockfile = locknames(session)
 
-	pbar = tqdm(range(100),position=pid+1,ncols=100,unit=" frames",leave=False)
+
+	# lets pace ourselves to help avoid race conditions
+	time.sleep(pid*2)
 
 	fcnt = 1
 	for filename in chunk:
+	    clear_screen() 
+	    if('pbar' in locals()):
+		    pbar.refresh() 
 
 	    # Use imageio[ffmpeg] to determine the number of frames	    
 	    while(True):
@@ -275,8 +294,6 @@ def process_chunk(chunk, pid):
 			    duration = metadata['duration']
 			    size = metadata['size']
 
-			    del v
-
 			    break
 		    except:
 			    print("imageio timeout.  Trying again")
@@ -287,7 +304,7 @@ def process_chunk(chunk, pid):
 
 	    # pre-allocate our inference buffer
 	    inference_buffer_size = (int(nframes/args.interval)+1,640,640,3)
-	    inference_buffer = np.empty(inference_buffer_size, dtype=np.uint8)
+	    inference_buffer      = np.empty(inference_buffer_size, dtype=np.uint8)
 
 	    try:
 		    invid = cv2.VideoCapture(filename)
@@ -302,17 +319,10 @@ def process_chunk(chunk, pid):
 	    nbatches = (math.ceil(nframes/args.interval))
 
 	    #print("Sampling video...")
-	    pbar.reset(total=nframes)
+	    pbar = tqdm(total=nframes,position=pid,ncols=100,unit=" frames",leave=True,file=sys.stdout)
 
-	    #pbar.write(" PROCESSING VIDEO: %s" %filename)
-	    #pbar.write("     TOTAL FRAMES: %d" %nframes)
-	    #pbar.write("              FPS: %d" %fps)
-	    #pbar.write("         DURATION: %f seconds"  %duration)
-	    #pbar.write("       FRAME SIZE: %dx%d" %(size[0],size[1]))
-	    #pbar.write(" INFERENCE BUFFER: %d -- (%.0f MB)" %(inference_buffer_size[0], ((reduce((lambda x, y: x * y), inference_buffer_size))/(1024*1024))))
-	    #pbar.write("*************************\n")
+	    pbar.set_description("pid=%s Reading File %d/%d: %s" %(str(pid).zfill(2),fcnt,len(chunk),filename))
 
-	    pbar.set_description("pid=%d Reading File %d/%d: %s" %(pid,fcnt,len(chunk),filename))
 
 	    #
 	    # Sample frames from the video at the specified sampling interval
@@ -325,23 +335,37 @@ def process_chunk(chunk, pid):
 			    if((i % args.interval)==0):
 				    inference_buffer[count] = cv2.resize(image, (640,640))
 				    count += 1
+			    if((i % 5000)==0):
+				    clear_screen()
+				    pbar.refresh()
 		    else:
 			    break
 	    
 		    pbar.update(1)
 
 
-	    pbar.reset(total=nbatches*args.interval)
+	    clear_screen()
+	    pbar.reset(total=nbatches*args.interval)	
+	    pbar.refresh()
+
+	    if(usegpu==True):
+		    pbar.set_description("pid=%s  WAITING for GPU: %s" %(str(pid).zfill(2),filename))
+	    else:
+		    pbar.set_description("pid=%s  WAITING for CPU: %s" %(str(pid).zfill(2),filename))
 
 	    while(True):
-		    if (gpulock_get() < 0) or (gpulock_get() == pid):
-			    gpulock_set(pid) 
+		    lck = lock_get(gpu_lockfile)
+		    
+		    if lck < 0 or lck == pid:
+			    lock_set(gpu_lockfile, pid)
 			    break
 		    else:
-			    pbar.set_description("pid=%d  WAITING for GPU: %s" %(pid,filename))
+			    pbar.refresh()
 			    time.sleep(0.5)
 
-	    pbar.set_description("pid=%d AI Detection %d/%d: %s" %(pid,fcnt,len(chunk),filename))
+	    pbar.set_description("pid=%s AI Detection %d/%d: %s" %(str(pid).zfill(2),fcnt,len(chunk),filename))
+	    pbar.refresh()
+
 
 	    # Iterate over the array to copy batches
 	    tiger_frames = {}	
@@ -366,29 +390,23 @@ def process_chunk(chunk, pid):
 					    if "CUDA out of memory" in str(e):
 						    print("CUDA out of memory error encountered.")
 						    exit(0)
-        
-
-		    del detections_tensor
 
 		    for i, d in enumerate(detections):
 			    frame_idx = (b*args.batchsize+i)*args.interval
 			    dn = d.cpu().detach().numpy()
 			    if len(dn):
 				    tiger_frames[frame_idx] = dn
+			    del dn
 
-		    del detections
-    
 		    if(usegpu):
 			    torch.cuda.empty_cache()
 
 		    pbar.update(args.interval)
-	    
-	    del inference_buffer
 
 	    if(usegpu==True):
 		    torch.cuda.empty_cache()
 
-	    gpulock_release()
+	    lock_release(gpu_lockfile, pid)
 		    
 	    groups = dict(enumerate(grouper(tiger_frames.keys()), 0))
 
@@ -437,9 +455,10 @@ def process_chunk(chunk, pid):
 		    i+=1
 
 
-	    return_list = []
 	    for i,g in enumerate(new_groups):
-		    pbar.set_description("pid=%d  Saving Clip %d/%d: %s" %(pid,i+1,len(new_groups),filename))
+		    pbar.set_description("pid=%s  Saving Clip %d/%d: %s" %(str(pid).zfill(2),i+1,len(new_groups),filename))
+		    #clear_screen()
+		    pbar.refresh()
 
 		    min_conf, max_conf, mean_conf = confidence(new_groups[g], tiger_frames) 
 
@@ -458,24 +477,26 @@ def process_chunk(chunk, pid):
 		    if(end_frame >= nframes):
 			    end_frame = nframes-1;
 
+		    pbar.reset(total=end_frame-start_frame)	
 		    invid.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
 		    for f in range(start_frame, end_frame):
+			    pbar.refresh()
 			    success, image = invid.read()
 			    if(success):
 				    outvid.write(label(image,f,fps))
+				    pbar.update(1)
 			    else:
 				    break
 		    outvid.release()
 
-		    report(pid, [filename, clip_path, fps, start_frame, end_frame, min_conf, max_conf, mean_conf])
+		    report(report_lockfile, pid, [filename, clip_path, fps, start_frame, end_frame, min_conf, max_conf, mean_conf])
 	    
 	    invid.release()
+	    clear_screen()
+	    pbar.refresh()
 	    fcnt += 1
 
 	pbar.close()
-
-
-
 
 
 
@@ -488,11 +509,16 @@ def main():
 
 	all_start_time = time.time()
 
+	stale_lock_cleanup()
+
+	session = str(uuid.uuid4())
+	gpu_lockfile, report_lockfile = locknames(session)
+
 	freeze_support()  # For Windows support - multiprocessing with tqdm
 
 	# release our lock files before starting
-	gpulock_release()
-	reportlock_release()
+	lock_release(gpu_lockfile,    -1)
+	lock_release(report_lockfile, -1)
 
 	try:
 		report_file = open(args.report, "w")
@@ -536,10 +562,10 @@ def main():
 	path = os.path.join(args.input, "*.mp4")
 	files = glob.glob(path)
 	random.shuffle(files)
-	ch = chunks(files,math.ceil(len(files)/args.jobs))
+	ch = chunks(files,args.jobs)
 
 	pool = Pool(processes=args.jobs, initargs=(RLock(),), initializer=tqdm.set_lock)
-	jobs = [pool.apply_async(process_chunk, args=(c,i,)) for i,c in enumerate(ch)]
+	jobs = [pool.apply_async(process_chunk, args=(session, i, c)) for i,c in enumerate(ch)]
 
 	if(usegpu==True):
 		torch.cuda.empty_cache()
@@ -547,11 +573,11 @@ def main():
 	r = [job.get() for job in jobs]
 	pool.close()
 
-	clear_screen()	
+	#clear_screen()	
 	reset_screen()	
     
-	gpulock_release()
-	reportlock_release()
+	lock_release(gpu_lockfile,    -1)
+	lock_release(report_lockfile, -1)
 
 	print("Total time to process %d videos: %.02f seconds" %(len(files), time.time()-all_start_time))
 	print("Report file saved to %s" %args.report)
@@ -559,7 +585,6 @@ def main():
 
 
 if __name__ == '__main__':
-
 
 	torch.multiprocessing.set_start_method('spawn')
 
