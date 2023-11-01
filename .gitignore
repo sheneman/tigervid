@@ -16,3 +16,4 @@ venv/
 .*swp
 .gpulock
 .reportlock
+*.csv
