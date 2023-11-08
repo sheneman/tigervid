@@ -206,7 +206,8 @@ def chunks(filenames, n):
 
 	for i in range(n):
 		end_index = start_index + chunk_size + (1 if i < remainder else 0)
-		chunks.append(filenames[start_index:end_index])
+		if(end_index > start_index):
+			chunks.append(filenames[start_index:end_index])
 		start_index = end_index
 
 	return chunks
@@ -282,7 +283,7 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 				if((i % args.interval)==0):
 					inference_buffer[count] = cv2.resize(image, (640,640))
 					count += 1
-				if((i % 2500)==0):   # keep the tqdm multi-bar interface looking clean
+				if((i % 2000)==0):   # keep the tqdm multi-bar interface looking clean
 					clear_screen()
 					pbar.refresh()
 			else:
@@ -295,8 +296,8 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 		pbar.reset(total=nbatches*args.interval)	
 		pbar.refresh()
 
-		pbar.set_description("pid=%s  WAITING for AI: %s" %(str(pid).zfill(2),filename))
 
+		pbar.set_description("pid=%s   WAITING for AI: %s" %(str(pid).zfill(2),filename))
 
 		##########################################################################################
 		# LOCKING SECTION - whether CPU or GPU, we need to wait our turn for inference resources #
@@ -304,7 +305,7 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 
 		lock_acquired = pu_lock.acquire(timeout=0.1)
 		while not lock_acquired:  # While the lock is not acquired
-			pbar.set_description("pid=%s  WAITING for AI: %s" %(str(pid).zfill(2),filename))
+			pbar.set_description("pid=%s   WAITING for AI: %s" %(str(pid).zfill(2),filename))
 			pbar.update(0)  
 			lock_acquired = pu_lock.acquire(timeout=0.1) 
 
@@ -357,6 +358,9 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 		##################################################################
 		# END LOCKING SECTION                                            #
 		##################################################################
+
+		clear_screen()
+		pbar.refresh()
 
 		    
 		groups = dict(enumerate(grouper(tiger_frames.keys()), 0))
@@ -451,7 +455,9 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 		pbar.refresh()
 		fcnt += 1
 
-	pbar.close()
+	#pbar.close()
+	pbar.set_description("pid=%s  Process Complete!" %(str(pid).zfill(2)))
+	pbar.refresh()
 
 
 
@@ -509,7 +515,6 @@ def main():
 	files = glob.glob(path)
 	random.shuffle(files)
 	ch = chunks(files,args.jobs)
-	
 
 	manager = Manager()
 
@@ -528,7 +533,7 @@ def main():
 	for p in processes:
 		p.join()
 
-	#clear_screen()	
+	clear_screen()	
 	reset_screen()	
     
 	print("Total time to process %d videos: %.02f seconds" %(len(files), time.time()-all_start_time))
