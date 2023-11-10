@@ -109,7 +109,7 @@ if (usegpu==False):
 
 if __name__ != '__main__':
 	logging.getLogger('torch.hub').setLevel(logging.ERROR)
-	model = torch.hub.load('ultralytics/yolov5', 'custom', path=args.model, _verbose=False, verbose=False)
+	model = torch.hub.load('ultralytics/yolov5', 'custom', path=args.model, _verbose=False, verbose=False, pretrained=True)
 	model.to(device)
 
 
