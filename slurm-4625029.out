@@ -1,0 +1,71 @@
+n110.fortytwo.ibest.uidaho.edu
+GPU 0: NVIDIA RTX A6000 (UUID: GPU-d0242476-4335-5ac0-a0af-9c967e8fab71)
+Could not find logging directory path 'logs'...Creating Directory!
+Using GPU
+
+	****************************************************
+	*                       __,,,,_                    *
+	*        _ __..-;''`--/'/ /.',-`-.                 *
+	*    (`/' ` |  \ \ \ / / / / .-'/`,_               *
+	*   /'`\ \   |  \ | \| // // / -.,/_,'-,           *
+	*  /<7' ;  \ \  | ; ||/ /| | \/    |`-/,/-.,_,/')  *
+	* /  _.-, `,-\,__|  _-| / \ \/|_/  |    '-/.;.'    *
+	* `-`  f/ ;      / __/ \__ `/ |__/ |               *
+	*      `-'      |  -| =|\_  \  |-' |               *
+	*            __/   /_..-' `  ),'  //               *
+	*           ((__.-'((___..-'' \__.'                *
+	*                                                  *
+	****************************************************
+	
+           BEGINNING PROCESSING          
+*********************************************
+        INPUT_DIR:  inputs
+       OUTPUT_DIR:  outputs
+    MODEL WEIGHTS:  md_v5a.0.0.pt
+SAMPLING INTERVAL:  30 frames
+  BUFFER DURATION:  5 seconds
+ CONCURRENT PROCS:  1
+       BATCH SIZE:  8
+          USE GPU:  True
+*********************************************
+
+
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+  File "/mnt/ceph/sheneman/miniconda3/lib/python3.8/multiprocessing/spawn.py", line 116, in spawn_main
+    exitcode = _main(fd, parent_sentinel)
+  File "/mnt/ceph/sheneman/miniconda3/lib/python3.8/multiprocessing/spawn.py", line 125, in _main
+    prepare(preparation_data)
+  File "/mnt/ceph/sheneman/miniconda3/lib/python3.8/multiprocessing/spawn.py", line 236, in prepare
+    _fixup_main_from_path(data['init_main_from_path'])
+  File "/mnt/ceph/sheneman/miniconda3/lib/python3.8/multiprocessing/spawn.py", line 287, in _fixup_main_from_path
+    main_content = runpy.run_path(main_path,
+  File "/mnt/ceph/sheneman/miniconda3/lib/python3.8/runpy.py", line 265, in run_path
+    return _run_module_code(code, init_globals, run_name,
+  File "/mnt/ceph/sheneman/miniconda3/lib/python3.8/runpy.py", line 97, in _run_module_code
+    _run_code(code, mod_globals, init_globals,
+  File "/mnt/ceph/sheneman/miniconda3/lib/python3.8/runpy.py", line 87, in _run_code
+    exec(code, run_globals)
+  File "/mnt/ceph/sheneman/src/tiger/tigervid/tigervid.py", line 112, in <module>
+    model = torch.hub.load('ultralytics/yolov5', 'custom', path=args.model, _verbose=False, verbose=False, pretrained=True)
+  File "/mnt/ceph/sheneman/src/tiger/tigervid/venv/lib/python3.8/site-packages/torch/hub.py", line 558, in load
+    model = _load_local(repo_or_dir, model, *args, **kwargs)
+  File "/mnt/ceph/sheneman/src/tiger/tigervid/venv/lib/python3.8/site-packages/torch/hub.py", line 587, in _load_local
+    model = entry(*args, **kwargs)
+TypeError: custom() got an unexpected keyword argument 'pretrained'
+Traceback (most recent call last):
+  File "./tigervid.py", line 548, in <module>
+    main()
+  File "./tigervid.py", line 519, in main
+    manager = Manager()
+  File "/mnt/ceph/sheneman/miniconda3/lib/python3.8/multiprocessing/context.py", line 57, in Manager
+    m.start()
+  File "/mnt/ceph/sheneman/miniconda3/lib/python3.8/multiprocessing/managers.py", line 583, in start
+    self._address = reader.recv()
+  File "/mnt/ceph/sheneman/miniconda3/lib/python3.8/multiprocessing/connection.py", line 250, in recv
+    buf = self._recv_bytes()
+  File "/mnt/ceph/sheneman/miniconda3/lib/python3.8/multiprocessing/connection.py", line 414, in _recv_bytes
+    buf = self._recv(4)
+  File "/mnt/ceph/sheneman/miniconda3/lib/python3.8/multiprocessing/connection.py", line 383, in _recv
+    raise EOFError
+EOFError

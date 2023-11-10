@@ -44,6 +44,7 @@ DEFAULT_REPORT_FILENAME = "report.csv"
 DEFAULT_NPROCS          = 1
 DEFAULT_BATCH_SIZE      = 8
 
+YOLODIR = "yolov5"
 
 
 parser = argparse.ArgumentParser(prog='tigervid', description='Analyze videos and extract clips and metadata which contain animals.')
@@ -109,7 +110,10 @@ if (usegpu==False):
 
 if __name__ != '__main__':
 	logging.getLogger('torch.hub').setLevel(logging.ERROR)
-	model = torch.hub.load('ultralytics/yolov5', 'custom', path=args.model, _verbose=False, verbose=False, pretrained=True)
+	if(os.path.exists(YOLODIR)):
+		model = torch.hub.load(YOLODIR, 'custom', path=args.model, _verbose=False, verbose=False, source='local')
+	else:
+		model = torch.hub.load('ultralytics/yolov5', 'custom', path=args.model, _verbose=False, verbose=False)
 	model.to(device)
 
 
