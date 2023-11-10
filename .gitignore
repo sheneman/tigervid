@@ -15,4 +15,5 @@ venv/
 .reportlock
 *.csv
 slurm*
+yolov5
 yolov5/*
