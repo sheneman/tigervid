@@ -7,8 +7,8 @@
 hostname
 nvidia-smi -L
 
-module load python/3.8.1 openmpi/1.10.2 cuda/11.2
+module load python/3.8.1 openmpi/1.10.2 cuda/11.8
 
 source ./venv/bin/activate 
 
-python ./tigervid.py inputs outputs --gpu --jobs 4
+python -u ./tigervid.py inputs1 outputs --gpu --jobs 4 --progressbar None

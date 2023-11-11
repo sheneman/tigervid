@@ -43,6 +43,7 @@ DEFAULT_BUFFER_TIME     = 5   # number of seconds of video to include before fir
 DEFAULT_REPORT_FILENAME = "report.csv"
 DEFAULT_NPROCS          = 1
 DEFAULT_BATCH_SIZE      = 8
+DEFAULT_PROGRESSBAR	= 'TQDM'
 
 YOLODIR = "yolov5"
 
@@ -52,13 +53,16 @@ parser = argparse.ArgumentParser(prog='tigervid', description='Analyze videos an
 parser.add_argument('input',  metavar='INPUT_DIR',  default=DEFAULT_INPUT_DIR,  help='Path to input directory containing MP4 videos')
 parser.add_argument('output', metavar='OUTPUT_DIR', default=DEFAULT_OUTPUT_DIR, help='Path to output directory for clips and metadatas')
 
-parser.add_argument('-m', '--model', 	 type=str, default=DEFAULT_MODEL, help='Path to the PyTorch model weights file (DEFAULT: '+DEFAULT_MODEL+')')
-parser.add_argument('-i', '--interval',  type=int, default=DEFAULT_INTERVAL, help='Number of frames to read between sampling with AI (DEFAULT: '+str(DEFAULT_INTERVAL)+')')
-parser.add_argument('-b', '--buffer', 	 type=int, default=DEFAULT_BUFFER_TIME, help='Number of seconds to prepend and append to clip (DEFAULT: '+str(DEFAULT_BUFFER_TIME)+')')
-parser.add_argument('-r', '--report', 	 type=str, default=DEFAULT_REPORT_FILENAME, help='Name of report metadata (DEFAULT: '+DEFAULT_REPORT_FILENAME+')')
-parser.add_argument('-j', '--jobs', 	 type=int, default=DEFAULT_NPROCS, help='Number of concurrent (parallel) processes (DEFAULT: '+str(DEFAULT_NPROCS)+')')
-parser.add_argument('-s', '--batchsize', type=int, default=DEFAULT_BATCH_SIZE, help='The batch size for inference (DEFAULT: '+str(DEFAULT_BATCH_SIZE)+')')
-parser.add_argument('-l', '--logging', 	 type=str, default=DEFAULT_LOGGING_DIR, help='The directory for log files (DEFAULT: '+str(DEFAULT_LOGGING_DIR)+')')
+parser.add_argument('-m', '--model', 	   type=str, default=DEFAULT_MODEL, help='Path to the PyTorch model weights file (DEFAULT: '+DEFAULT_MODEL+')')
+parser.add_argument('-i', '--interval',    type=int, default=DEFAULT_INTERVAL, help='Number of frames to read between sampling with AI (DEFAULT: '+str(DEFAULT_INTERVAL)+')')
+parser.add_argument('-b', '--buffer', 	   type=int, default=DEFAULT_BUFFER_TIME, help='Number of seconds to prepend and append to clip (DEFAULT: '+str(DEFAULT_BUFFER_TIME)+')')
+parser.add_argument('-r', '--report', 	   type=str, default=DEFAULT_REPORT_FILENAME, help='Name of report metadata (DEFAULT: '+DEFAULT_REPORT_FILENAME+')')
+parser.add_argument('-j', '--jobs', 	   type=int, default=DEFAULT_NPROCS, help='Number of concurrent (parallel) processes (DEFAULT: '+str(DEFAULT_NPROCS)+')')
+parser.add_argument('-s', '--batchsize',   type=int, default=DEFAULT_BATCH_SIZE, help='The batch size for inference (DEFAULT: '+str(DEFAULT_BATCH_SIZE)+')')
+parser.add_argument('-l', '--logging', 	   type=str, default=DEFAULT_LOGGING_DIR, help='The directory for log files (DEFAULT: '+str(DEFAULT_LOGGING_DIR)+')')
+
+parser.add_argument('-p', '--progressbar', type=str, default=DEFAULT_PROGRESSBAR, help='The mode of the progress bar.  Either \'TQDM\' or \'none\' (DEFAULT: '+str(DEFAULT_PROGRESSBAR)+')')
+
 
 group = parser.add_mutually_exclusive_group()
 group.add_argument('-g', '--gpu', action='store_true',  default=True, help='Use GPU if available (DEFAULT)')
@@ -68,35 +72,35 @@ args = parser.parse_args()
 
 
 if(not os.path.isfile(args.model)):
-	print("Error:  Could not find model weights '%s'" %args.model)
+	print("Error:  Could not find model weights '%s'" %args.model, flush=True)
 	parser.print_usage()
 	exit(-1)
 
 if(not os.path.exists(args.input)):
-	print("Error:  Could not find input directory path '%s'" %args.input)
+	print("Error:  Could not find input directory path '%s'" %args.input, flush=True)
 	parser.print_usage()
 	exit(-1)
 
 if(not os.path.exists(args.output)):
-	print("Could not find output directory path '%s'...Creating Directory!" %args.output)
+	print("Could not find output directory path '%s'...Creating Directory!" %args.output, flush=True)
 	os.makedirs(args.outputs)
 
 if(not os.path.exists(args.logging)):
-	print("Could not find logging directory path '%s'...Creating Directory!" %args.logging)
+	print("Could not find logging directory path '%s'...Creating Directory!" %args.logging, flush=True)
 	os.makedirs(args.logging)
 
 if(args.cpu==True):
 	device = "cpu"
 	torch.device(device)
 	if __name__ == '__main__':
-	    print("Using CPU")
+	    print("Using CPU", flush=True)
 	usegpu = False
 else:
 	if(torch.cuda.is_available()):
 		device = "cuda"
 		usegpu = True
 		if __name__ == '__main__':
-		    print("Using GPU")
+		    print("Using GPU", flush=True)
 	else:
 		device = "cpu"
 		usegpu = False
@@ -105,7 +109,7 @@ torch.device(device)
 
 if (usegpu==False):
 	if __name__ == '__main__':
-		print("Forcing batchsize=1 (using CPU)")
+		print("Forcing batchsize=1 (using CPU)", flush=True)
 	args.batchsize = 1
 
 if __name__ != '__main__':
@@ -130,7 +134,7 @@ def report(report_lock, pid, report_list):
 			report_file.flush()
 			report_file.close()
 		except:
-			print("Warning:  Could not open report file %s for writing in report()" %(args.report))
+			print("Warning:  Could not open report file %s for writing in report()" %(args.report), flush=True)
 
 
 
@@ -222,6 +226,7 @@ def chunks(filenames, n):
 def process_chunk(pid, chunk, pu_lock, report_lock):
 
 	global args
+	global model
 
 	# lets pace ourselves on startup to help avoid general race conditions
 	time.sleep(pid*1)
@@ -246,7 +251,7 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 	
 				break
 			except:
-				print("WARNING: imageio timeout.   Trying again.")
+				print("WARNING: imageio timeout.   Trying again.", flush=True)
 				time.sleep(1)
 				
 
@@ -260,7 +265,7 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 		try:
 			invid = cv2.VideoCapture(filename)
 		except:
-			print("Could not read video file: ", filename, " skipping...")
+			print("Could not read video file: ", filename, " skipping...", flush=True)
 			continue
 
 
@@ -271,9 +276,12 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 		nbatches = (math.ceil(nframes/args.interval))
 
 		#print("Sampling video...")
-		pbar = tqdm(total=nframes,position=pid,ncols=100,unit=" frames",leave=True,mininterval=0.5,file=sys.stdout)
 
-		pbar.set_description("pid=%s Reading File %d/%d: %s" %(str(pid).zfill(2),fcnt,len(chunk),filename))
+		if(args.progressbar == 'TQDM'):
+			pbar = tqdm(total=nframes,position=pid,ncols=100,unit=" frames",leave=True,mininterval=0.5,file=sys.stdout)
+			pbar.set_description("pid=%s Reading File %d/%d: %s" %(str(pid).zfill(2),fcnt,len(chunk),filename))
+		else:
+			print("pid=%s Reading File %d/%d: %s" %(str(pid).zfill(2),fcnt,len(chunk),filename), flush=True)
 
 
 		#
@@ -287,21 +295,21 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 				if((i % args.interval)==0):
 					inference_buffer[count] = cv2.resize(image, (640,640))
 					count += 1
-				if((i % 2000)==0):   # keep the tqdm multi-bar interface looking clean
+				if(args.progressbar == 'TQDM' and (i % 2000)==0):   # keep the tqdm multi-bar interface looking clean
 					clear_screen()
 					pbar.refresh()
 			else:
 				break
-	    
-			pbar.update(1)
+	  
+			if(args.progressbar == 'TQDM'): 
+				pbar.update(1)
 
-
-		clear_screen()
-		pbar.reset(total=nbatches*args.interval)	
-		pbar.refresh()
-
-
-		pbar.set_description("pid=%s   WAITING for AI: %s" %(str(pid).zfill(2),filename))
+		if(args.progressbar == 'TQDM'):
+			clear_screen()
+			pbar.reset(total=nbatches*args.interval)	
+			pbar.refresh()
+		else:
+			print("pid=%s   WAITING for AI: %s" %(str(pid).zfill(2),filename), flush=True)
 
 		##########################################################################################
 		# LOCKING SECTION - whether CPU or GPU, we need to wait our turn for inference resources #
@@ -309,13 +317,20 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 
 		lock_acquired = pu_lock.acquire(timeout=0.1)
 		while not lock_acquired:  # While the lock is not acquired
-			pbar.set_description("pid=%s   WAITING for AI: %s" %(str(pid).zfill(2),filename))
-			pbar.update(0)  
+			if(args.progressbar == 'TQDM'):
+				pbar.set_description("pid=%s   WAITING for AI: %s" %(str(pid).zfill(2),filename))
+				pbar.update(0)  
+			else:
+				print("pid=%s   WAITING for AI: %s" %(str(pid).zfill(2),filename), flush=True)
+
 			lock_acquired = pu_lock.acquire(timeout=0.1) 
 
-		clear_screen()
-		pbar.set_description("pid=%s AI Detection %d/%d: %s" %(str(pid).zfill(2),fcnt,len(chunk),filename))
-		pbar.refresh()
+		if(args.progressbar == 'TQDM'):
+			clear_screen()
+			pbar.set_description("pid=%s AI Detection %d/%d: %s" %(str(pid).zfill(2),fcnt,len(chunk),filename))
+			pbar.refresh()
+		else:
+			print("pid=%s AI Detection %d/%d: %s" %(str(pid).zfill(2),fcnt,len(chunk),filename), flush=True)
 
 
 		# Iterate over the array to copy batches
@@ -337,10 +352,12 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 		    
 					try:
 						detections_tensor = model(image_tensors)
+				
 						detections = non_max_suppression(detections_tensor)
 					except RuntimeError as e:
 						if "CUDA out of memory" in str(e):
-							print("CUDA out of memory error encountered.")
+							print("CUDA out of memory error encountered.", flush=True)
+							time.sleep(10)
 							exit(0)
 
 			for i, d in enumerate(detections):
@@ -353,7 +370,8 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 			if(usegpu):
 				torch.cuda.empty_cache()
 
-			pbar.update(args.interval)
+			if(args.progressbar == 'TQDM'):	
+				pbar.update(args.interval)
 
 		if(usegpu==True):
 			torch.cuda.empty_cache()
@@ -363,8 +381,9 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 		# END LOCKING SECTION                                            #
 		##################################################################
 
-		clear_screen()
-		pbar.refresh()
+		if(args.progressbar == 'TQDM'):
+			clear_screen()
+			pbar.refresh()
 
 		    
 		groups = dict(enumerate(grouper(tiger_frames.keys()), 0))
@@ -415,9 +434,12 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 
 
 		for i,g in enumerate(new_groups):
-			pbar.set_description("pid=%s  Saving Clip %d/%d: %s" %(str(pid).zfill(2),i+1,len(new_groups),filename))
-			#clear_screen()
-			pbar.refresh()
+
+			if(args.progressbar == 'TQDM'):
+				pbar.set_description("pid=%s  Saving Clip %d/%d: %s" %(str(pid).zfill(2),i+1,len(new_groups),filename))
+				pbar.refresh()
+			else:
+				print("pid=%s  Saving Clip %d/%d: %s" %(str(pid).zfill(2),i+1,len(new_groups),filename), flush=True)
 
 			min_conf, max_conf, mean_conf = confidence(new_groups[g], tiger_frames) 
 
@@ -436,14 +458,18 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 			if(end_frame >= nframes):
 				end_frame = nframes-1;
 
-			pbar.reset(total=end_frame-start_frame)	
+			if(args.progressbar == 'TQDM'):
+				pbar.reset(total=end_frame-start_frame)	
+
 			invid.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
 			for f in range(start_frame, end_frame):
-				pbar.refresh()
+				if(args.progressbar == 'TQDM'):	
+					pbar.refresh()
 				success, image = invid.read()
 				if(success):
 					outvid.write(label(image,f,fps))
-					pbar.update(1)
+					if(args.progressbar == 'TQDM'):
+						pbar.update(1)
 				else:
 					break
 
@@ -451,17 +477,21 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 
 			report(report_lock, pid, [filename, clip_path, fps, start_frame, end_frame, min_conf, max_conf, mean_conf])
 
-			clear_screen()
+			if(args.progressbar == 'TQDM'):	
+				clear_screen()
 	    
 		invid.release()
 
-		clear_screen()
-		pbar.refresh()
+		if(args.progressbar == 'TQDM'):
+			clear_screen()
+			pbar.refresh()
 		fcnt += 1
 
-	#pbar.close()
-	pbar.set_description("pid=%s  Process Complete!" %(str(pid).zfill(2)))
-	pbar.refresh()
+	if(args.progressbar == 'TQDM'):
+		pbar.set_description("pid=%s  Process Complete!" %(str(pid).zfill(2)))
+		pbar.refresh()
+	else:
+		print("pid=%s  Process Complete!" %(str(pid).zfill(2)), flush=True)
 
 
 
@@ -479,7 +509,7 @@ def main():
 	try:
 		report_file = open(args.report, "w")
 	except:
-		print("Error: Could not open report file %s in main()" %(args.report))
+		print("Error: Could not open report file %s in main()" %(args.report), flush=True)
 		exit(-1)
 
 	report_file.write("ORIGINAL, CLIP, START_FRAME, START_TIME, END_FRAME, END_TIME, NUM FRAMES, DURATION, MIN_CONF, MAX_CONF, MEAN_CONF\n")
@@ -501,7 +531,7 @@ def main():
 	*           ((__.-'((___..-'' \__.'                *
 	*                                                  *
 	****************************************************
-	''')
+	''', flush=True)
 
 	print("           BEGINNING PROCESSING          ")
 	print("*********************************************")
@@ -513,7 +543,7 @@ def main():
 	print(" CONCURRENT PROCS: ", args.jobs)
 	print("       BATCH SIZE: ", args.batchsize)
 	print("          USE GPU: ", usegpu)
-	print("*********************************************\n\n")
+	print("*********************************************\n\n", flush=True)
 
 	path = os.path.join(args.input, "*.mp4")
 	files = glob.glob(path)
@@ -537,8 +567,9 @@ def main():
 	for p in processes:
 		p.join()
 
-	clear_screen()	
-	reset_screen()	
+	if(args.progressbar == 'TQDM'):
+		clear_screen()	
+		reset_screen()	
     
 	print("Total time to process %d videos: %.02f seconds" %(len(files), time.time()-all_start_time))
 	print("Report file saved to %s" %args.report)
