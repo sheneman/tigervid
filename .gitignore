@@ -17,3 +17,5 @@ venv/
 slurm*
 yolov5
 yolov5/*
+*.mp3
+*.old
