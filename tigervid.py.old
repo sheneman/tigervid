@@ -28,7 +28,6 @@ import torch
 from torch.cuda.amp import autocast
 import glob
 import numpy as np
-import imageio
 from tqdm import tqdm	
 from functools import reduce
 from general import non_max_suppression
@@ -39,7 +38,7 @@ DEFAULT_OUTPUT_DIR	= "outputs"
 DEFAULT_LOGGING_DIR 	= "logs"
 
 DEFAULT_MODEL           = 'md_v5a.0.0.pt'
-DEFAULT_INTERVAL        = 30  # number of frames between samples
+DEFAULT_INTERVAL        = 1   # number of seconds between samples
 DEFAULT_BUFFER_TIME     = 5   # number of seconds of video to include before first detection and after last detection
 DEFAULT_REPORT_FILENAME = "report.csv"
 DEFAULT_NPROCS          = 1
@@ -49,13 +48,14 @@ DEFAULT_PROGRESSBAR	= 'TQDM'
 YOLODIR = "yolov5"
 
 
+
 parser = argparse.ArgumentParser(prog='tigervid', description='Analyze videos and extract clips and metadata which contain animals.')
 
 parser.add_argument('input',  metavar='INPUT_DIR',  default=DEFAULT_INPUT_DIR,  help='Path to input directory containing MP4 videos')
 parser.add_argument('output', metavar='OUTPUT_DIR', default=DEFAULT_OUTPUT_DIR, help='Path to output directory for clips and metadatas')
 
 parser.add_argument('-m', '--model', 	   type=str, default=DEFAULT_MODEL, help='Path to the PyTorch model weights file (DEFAULT: '+DEFAULT_MODEL+')')
-parser.add_argument('-i', '--interval',    type=int, default=DEFAULT_INTERVAL, help='Number of frames to read between sampling with AI (DEFAULT: '+str(DEFAULT_INTERVAL)+')')
+parser.add_argument('-i', '--interval',    type=int, default=DEFAULT_INTERVAL, help='Number of seconds between samples with AI (DEFAULT: '+str(DEFAULT_INTERVAL)+')')
 parser.add_argument('-b', '--buffer', 	   type=int, default=DEFAULT_BUFFER_TIME, help='Number of seconds to prepend and append to clip (DEFAULT: '+str(DEFAULT_BUFFER_TIME)+')')
 parser.add_argument('-r', '--report', 	   type=str, default=DEFAULT_REPORT_FILENAME, help='Name of report metadata (DEFAULT: '+DEFAULT_REPORT_FILENAME+')')
 parser.add_argument('-j', '--jobs', 	   type=int, default=DEFAULT_NPROCS, help='Number of concurrent (parallel) processes (DEFAULT: '+str(DEFAULT_NPROCS)+')')
@@ -158,11 +158,11 @@ def pairwise(iterable):
 	    yield (a, b)
 	    a = b
 
-def grouper(iterable):
+def grouper(iterable, fps):
 	prev = None
 	group = []
 	for item in iterable:
-		if prev is None or item - prev <= 3*args.interval:  
+		if prev is None or item - prev <= 3*args.interval*fps:  
 			group.append(item)
 		else:
 			yield group
@@ -201,6 +201,7 @@ def reset_screen():
 		os.system('reset')
 
 
+
 def chunks(filenames, n):
 	if n <= 0:
 		return []
@@ -233,78 +234,43 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 
 	fcnt = 1
 	for filename in chunk:
-		clear_screen() 
+		#clear_screen() 
 		if('pbar' in locals()):
 			pbar.refresh() 
 
-		# Use imageio[ffmpeg] to determine the number of frames	    
-		while(True):
-			try:
-				v=imageio.get_reader(filename,  'ffmpeg')
-				nframes  = v.count_frames()
-				metadata = v.get_meta_data()
-				v.close()
-
-				fps = metadata['fps']
-				duration = metadata['duration']
-				size = metadata['size']
-	
-				break
-			except:
-				print("WARNING: imageio timeout.   Trying again.", flush=True)
-				time.sleep(1)
-
-
-
-		(width,height) = size
-		buffer_frames = int(fps*args.buffer)
-
-		# pre-allocate our inference buffer
-		inference_buffer_size = (int(nframes/args.interval)+1,640,640,3)
-		inference_buffer      = np.empty(inference_buffer_size, dtype=np.uint8)
-
 		try:
-			invid = cv2.VideoCapture(filename)
+			invid = VideoFileClip(filename)
 		except:
 			print("Could not read video file: ", filename, " skipping...", flush=True)
 			continue
 
-		print("\n\nIMAGEIO:")
-		print("   duration = ", duration)
-		print("    nframes = ", nframes)
-		print("        fps = ", fps)
-		print("\n")	
+		# Accessing properties
+		print("FPS:", invid.fps)
+		print("Duration:", invid.duration)
+		print("Size:", invid.size)
+		print("Width:", invid.w)
+		print("Height:", invid.h)
+		print("Aspect Ratio:", invid.aspect_ratio)
+		print("Filename:", invid.filename)
 
-		print("OPENCV2:")
-		cv2_nframes = invid.get(cv2.CAP_PROP_FRAME_COUNT)
-		cv2_fps = invid.get(cv2.CAP_PROP_FPS)
-		cv2_duration = cv2_nframes / cv2_fps
-		print("   duration = ", cv2_duration)
-		print("    nframes = ", cv2_nframes)
-		print("        fps = ", cv2_fps)
-		print("\n")	
+		nframes  = math.floor(invid.duration * invid.fps)
+		duration = invid.duration
+		width    = invid.w
+		height   = invid.h
+		fps      = invid.fps
+		frames_per_interval = int(args.interval*fps)
 
-		print("MOVIEPY:")
-		mpy_invid  = VideoFileClip(filename)	
-		mpy_fps = mpy_invid.fps
-		mpy_duration = mpy_invid.duration
-		mpy_nframes = int(mpy_fps*mpy_duration)
-		print("   duration = ", mpy_duration)
-		print("    nframes = ", mpy_nframes)
-		print("        fps = ", mpy_fps)
-		print("\n")	
-		mpy_invid.close()
+		buffer_frames = int(fps*args.buffer)
 
-		exit(0)
-		
-		
+		# pre-allocate our inference buffer
+		inference_buffer_size = (int(nframes/frames_per_interval)+1,640,640,3)
+		inference_buffer      = np.empty(inference_buffer_size, dtype=np.uint8)
 
 		count        = 0
 		tiger_frames = 0
 		detections   = []
 
-		nbatches = (math.ceil(nframes/args.interval))
-		
+		nbatches = (math.ceil(nframes/frames_per_interval))
 
 		#print("Sampling video...")
 
@@ -320,27 +286,20 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 		# and put in a buffer
 		#
 		count = 0	
-		for i in range(nframes):
-			success, image = invid.read()
-			if success:
-				if((i % args.interval)==0):
-					inference_buffer[count] = cv2.resize(image, (640,640))
-					count += 1
-				if(pid == 0 and args.progressbar == 'TQDM' and (i % 2000)==0):   # keep the tqdm multi-bar interface looking clean
-					clear_screen()
-					pbar.refresh()
-			else:
-				break
-	  
-			if(args.progressbar == 'TQDM'): 
-				pbar.update(1)
+		for t in range(0, int(duration), args.interval):
 
-		invid.release()
+			print(t, t*fps)
+			image = invid.get_frame(t)
+
+			inference_buffer[count] = cv2.resize(image, (640,640))
+			if(args.progressbar == 'TQDM'): 
+				pbar.update(frames_per_interval)
+
+			count += 1
 
 		if(args.progressbar == 'TQDM'):
 			clear_screen()
-			pbar.reset(total=nbatches)	
-			pbar.unit = " intervals"
+			pbar.reset(total=nbatches*frames_per_interval)	
 			pbar.refresh()
 		else:
 			print("pid=%s   WAITING for AI: %s" %(str(pid).zfill(2),filename), flush=True)
@@ -354,8 +313,6 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 			if(args.progressbar == 'TQDM'):
 				pbar.set_description("pid=%s   WAITING for AI: %s" %(str(pid).zfill(2),filename))
 				pbar.update(0)  
-			else:
-				print("pid=%s   WAITING for AI: %s" %(str(pid).zfill(2),filename), flush=True)
 
 			lock_acquired = pu_lock.acquire(timeout=0.1) 
 
@@ -395,7 +352,7 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 							exit(0)
 
 			for i, d in enumerate(detections):
-				frame_idx = (b*args.batchsize+i)*args.interval
+				frame_idx = (b*args.batchsize+i)*frames_per_interval
 				dn = d.cpu().detach().numpy()
 				if len(dn):
 					tiger_frames[frame_idx] = dn
@@ -405,7 +362,7 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 				torch.cuda.empty_cache()
 
 			if(args.progressbar == 'TQDM'):	
-				pbar.update(1)
+				pbar.update(frames_per_interval)
 
 		if(usegpu==True):
 			torch.cuda.empty_cache()
@@ -420,7 +377,9 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 			pbar.refresh()
 
 		    
-		groups = dict(enumerate(grouper(tiger_frames.keys()), 0))
+		groups = dict(enumerate(grouper(tiger_frames.keys(),fps), 0))
+		print(groups)
+		time.sleep(10)
 
 		#
 		# Merge groups which overlap due to buffer_frames
@@ -466,9 +425,7 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 		    
 			i+=1
 
-		mpy_invid  = VideoFileClip(filename)	
-		pbar.reset(total=0)
-		pbar.unit = ""
+
 		for i,g in enumerate(new_groups):
 
 			if(args.progressbar == 'TQDM'):
@@ -477,6 +434,7 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 			else:
 				print("pid=%s  Saving Clip %d/%d: %s" %(str(pid).zfill(2),i+1,len(new_groups),filename), flush=True)
 
+			min_conf, max_conf, mean_conf = confidence(new_groups[g], tiger_frames) 
 
 			fn = os.path.basename(filename)
 			clip_name = os.path.splitext(fn)[0] + "_{:03d}".format(g) + ".mp4"
@@ -490,35 +448,15 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 			if(end_frame >= nframes):
 				end_frame = nframes-1;
 
-			# normalize start_frame and end_frame to [0,1]
-			start_norm = float(start_frame)/float(nframes)
-			end_norm = float(end_frame)/float(nframes)
+			subclip = invid.subclip(start_frame*fps, end_frame*fps)
+			subclip.write_videofile(clip_path, codec='libx264', audio_codec='aac')
 
-			#print("start_norm = %.02f,  end_norm = %.02f" %(start_norm, end_norm))
-		
-			mpy_start_time = float(mpy_invid.duration*start_norm)
-			mpy_end_time   = float(mpy_invid.duration*end_norm)
-
-			#print("mpy_duration = %.02f" %mpy_invid.duration)
-			#print("mpy_start_time = %.02f,  mpy_end_time = %.02f" %(mpy_start_time, mpy_end_time))
-    
-			if(args.progressbar != 'TQDM'):
-				print("Getting subclip from time %.02f to %.02f" %(mpy_start_time, mpy_end_time), flush=True)
-
-			subclip = mpy_invid.subclip(mpy_start_time, mpy_end_time)	
-
-			if(args.progressbar != 'TQDM'):
-				print("Writing subclip %s..." %clip_name)
-
-			subclip.write_videofile(clip_path, audio=False, logger=None, verbose=False)
-			subclip.close()
-
-			# Write to our report
-			min_conf, max_conf, mean_conf = confidence(new_groups[g], tiger_frames) 
 			report(report_lock, pid, [filename, clip_path, fps, start_frame, end_frame, min_conf, max_conf, mean_conf])
 
-		mpy_invid.close()
+			if(args.progressbar == 'TQDM'):	
+				clear_screen()
 
+		invid.close()
 
 		if(args.progressbar == 'TQDM'):
 			clear_screen()
