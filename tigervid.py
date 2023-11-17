@@ -30,20 +30,18 @@ import numpy as np
 import imageio
 from tqdm import tqdm	
 from functools import reduce
-from general import non_max_suppression
 
 
 DEFAULT_INPUT_DIR	= "inputs"
 DEFAULT_OUTPUT_DIR	= "outputs"
 DEFAULT_LOGGING_DIR 	= "logs"
 
-DEFAULT_MODEL           = 'md_v5a.0.0.pt'
-DEFAULT_INTERVAL        = 30  # number of frames between samples
-DEFAULT_BUFFER_TIME     = 5   # number of seconds of video to include before first detection and after last detection
-DEFAULT_REPORT_FILENAME = "report.csv"
-DEFAULT_NPROCS          = 1
-DEFAULT_BATCH_SIZE      = 8
-DEFAULT_PROGRESSBAR	= 'TQDM'
+DEFAULT_MODEL            = 'md_v5a.0.0.pt'
+DEFAULT_INTERVAL         = 30  # number of frames between samples
+DEFAULT_BUFFER_INTERVALS = 5   # number of intervals of video to include before first detection and after last detection
+DEFAULT_REPORT_FILENAME  = "report.csv"
+DEFAULT_NPROCS           = 1
+DEFAULT_PROGRESSBAR	 = 'TQDM'
 
 YOLODIR = "yolov5"
 
@@ -55,10 +53,9 @@ parser.add_argument('output', metavar='OUTPUT_DIR', default=DEFAULT_OUTPUT_DIR, 
 
 parser.add_argument('-m', '--model', 	   type=str, default=DEFAULT_MODEL, help='Path to the PyTorch model weights file (DEFAULT: '+DEFAULT_MODEL+')')
 parser.add_argument('-i', '--interval',    type=int, default=DEFAULT_INTERVAL, help='Number of frames to read between sampling with AI (DEFAULT: '+str(DEFAULT_INTERVAL)+')')
-parser.add_argument('-b', '--buffer', 	   type=int, default=DEFAULT_BUFFER_TIME, help='Number of seconds to prepend and append to clip (DEFAULT: '+str(DEFAULT_BUFFER_TIME)+')')
+parser.add_argument('-b', '--buffer', 	   type=int, default=DEFAULT_BUFFER_INTERVALS, help='Number of frames to prepend and append to clip (DEFAULT: '+str(DEFAULT_BUFFER_INTERVALS)+')')
 parser.add_argument('-r', '--report', 	   type=str, default=DEFAULT_REPORT_FILENAME, help='Name of report metadata (DEFAULT: '+DEFAULT_REPORT_FILENAME+')')
 parser.add_argument('-j', '--jobs', 	   type=int, default=DEFAULT_NPROCS, help='Number of concurrent (parallel) processes (DEFAULT: '+str(DEFAULT_NPROCS)+')')
-parser.add_argument('-s', '--batchsize',   type=int, default=DEFAULT_BATCH_SIZE, help='The batch size for inference (DEFAULT: '+str(DEFAULT_BATCH_SIZE)+')')
 parser.add_argument('-l', '--logging', 	   type=str, default=DEFAULT_LOGGING_DIR, help='The directory for log files (DEFAULT: '+str(DEFAULT_LOGGING_DIR)+')')
 
 parser.add_argument('-p', '--progressbar', type=str, default=DEFAULT_PROGRESSBAR, help='The mode of the progress bar.  Either \'TQDM\' or \'none\' (DEFAULT: '+str(DEFAULT_PROGRESSBAR)+')')
@@ -107,11 +104,6 @@ else:
 
 torch.device(device)
 
-if (usegpu==False):
-	if __name__ == '__main__':
-		print("Forcing batchsize=1 (using CPU)", flush=True)
-	args.batchsize = 1
-
 if __name__ != '__main__':
 	logging.getLogger('torch.hub').setLevel(logging.ERROR)
 	if(os.path.exists(YOLODIR)):
@@ -122,19 +114,18 @@ if __name__ != '__main__':
 
 
 
-def report(report_lock, pid, report_list):
+def report(pid, report_list):
 
 	filename,clip_path,fps,start_frame,end_frame,min_conf,max_conf,mean_conf = report_list
 	s = "\"%s\", \"%s\", %d, %f, %d, %f, %d, %f, %.02f, %.02f, %.02f\n" %(filename, clip_path, start_frame, start_frame/fps, end_frame, end_frame/fps, end_frame-start_frame, (end_frame-start_frame)/fps, min_conf, max_conf, mean_conf)
 
-	with report_lock:
-		try:
-			report_file = open(args.report, "a")
-			report_file.write(s)	
-			report_file.flush()
-			report_file.close()
-		except:
-			print("Warning:  Could not open report file %s for writing in report()" %(args.report), flush=True)
+	try:
+		report_file = open(args.report, "a")
+		report_file.write(s)	
+		report_file.flush()
+		report_file.close()
+	except:
+		print("Warning:  Could not open report file %s for writing in report()" %(args.report), flush=True)
 
 
 
@@ -144,31 +135,6 @@ def label(img, frame, fps):
 	cv2.putText(img, s, (200,100), cv2.FONT_HERSHEY_SIMPLEX, 1.75, (0,0,0), 6, cv2.LINE_AA) 	
 	cv2.putText(img, s, (200,100), cv2.FONT_HERSHEY_SIMPLEX, 1.75, (255,255,255), 3, cv2.LINE_AA) 	
 	return(img)
-
-def split(a, n):
-	k, m = divmod(len(a), n)
-	return (a[i*k+min(i, m):(i+1)*k+min(i+1, m)] for i in range(n))
-
-def pairwise(iterable):
-	it = iter(iterable)
-	a = next(it, None)
-
-	for b in it:
-	    yield (a, b)
-	    a = b
-
-def grouper(iterable):
-	prev = None
-	group = []
-	for item in iterable:
-		if prev is None or item - prev <= 3*args.interval:  
-			group.append(item)
-		else:
-			yield group
-			group = [item]
-		prev = item
-	if group:
-		yield group
 
 
 def confidence(group, frames):
@@ -223,21 +189,92 @@ def chunks(filenames, n):
 
 
 
+	
+
+#
+# retrieves chunk of video frames of size interval_sz
+# returns: 
+#     interval frame buffer and chunk id
+#     detection (True/False)
+#     success (True/False) 
+#
+def get_video_chunk(invid, model, interval_sz, pu_lock):
+
+	global chunk_idx
+
+	print("Getting chunk: %d" %chunk_idx)
+	#print("Interval Size: %d" %interval_sz)
+
+	buf = []
+	for i in range(interval_sz):
+		success, image = invid.read()
+		if(success):
+			#print("success")
+			buf.append(image)
+		else:
+			#print("failure")
+			res = (chunk_idx, buf)
+			chunk_idx += 1
+			return(res, False, False)
+
+	inference_frame = cv2.resize(image, (640,640))
+	#print("About to acquire pu_lock", flush=True)
+	with pu_lock:
+		try:
+			results = model(inference_frame).pandas().xyxy[0]
+		except:
+			print("Error: Could not run model inference on this frame")
+			res = (chunk_idx, buf)
+			chunk_idx += 1
+			return(res, False, False)
+
+	#print("After lock...", flush=True)
+	
+
+	ntargets = results.shape[0]
+	if(ntargets):
+		detection = True
+	else:
+		detection = False
+    
+	print("----> Detection: ", detection)
+
+	res = (chunk_idx, buf)
+	chunk_idx+=1
+	return(res, detection, True)
+
+
+def write_clip(clip, frame_chunk):
+	frame_chunk_idx, buf = frame_chunk
+
+	print("Writing: ", frame_chunk_idx)
+	
+	for frame in buf:
+		clip.write(frame)
+		
+
+def get_debug_buffer(buf):
+	indices = [] 
+	for f in buf: 
+		indices.append(f[0])
+
+	return(indices)
+	
+
+
+
+
 def process_chunk(pid, chunk, pu_lock, report_lock):
 
 	global args
 	global model
+	global chunk_idx
 
 	# lets pace ourselves on startup to help avoid general race conditions
 	time.sleep(pid*1)
 
-	fcnt = 1
 	for filename in chunk:
-		#clear_screen() 
-		if('pbar' in locals()):
-			pbar.refresh() 
 
-		# Use imageio[ffmpeg] to determine the number of frames	    
 		while(True):
 			try:
 				v=imageio.get_reader(filename,  'ffmpeg')
@@ -252,15 +289,9 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 				break
 			except:
 				print("WARNING: imageio timeout.   Trying again.", flush=True)
-				time.sleep(1)
-				
+				time.sleep(0.25)
 
 		(width,height) = size
-		buffer_frames = int(fps*args.buffer)
-
-		# pre-allocate our inference buffer
-		inference_buffer_size = (int(nframes/args.interval)+1,640,640,3)
-		inference_buffer      = np.empty(inference_buffer_size, dtype=np.uint8)
 
 		try:
 			invid = cv2.VideoCapture(filename)
@@ -268,231 +299,151 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 			print("Could not read video file: ", filename, " skipping...", flush=True)
 			continue
 
+		DETECTION = 500
+		SCANNING  = 501
 
-		count        = 0
-		tiger_frames = 0
-		detections   = []
+		state = SCANNING
 
-		nbatches = (math.ceil(nframes/args.interval))
+		chunk_idx = 0
+		clip_number = 0
+		buffer_chunks = []
+		frame_chunk, this_detection, success = get_video_chunk(invid, model, args.interval, pu_lock)
+		
+		
+		print("NUMBER OF FRAMES: ", nframes)
+		print("NUMBER OF CHUNKS: ", math.ceil(nframes/args.interval))
 
-		#print("Sampling video...")
-
-		if(args.progressbar == 'TQDM'):
-			pbar = tqdm(total=nframes,position=pid,ncols=100,unit=" frames",leave=True,mininterval=0.5,file=sys.stdout)
-			pbar.set_description("pid=%s Reading File %d/%d: %s" %(str(pid).zfill(2),fcnt,len(chunk),filename))
-		else:
-			print("pid=%s Reading File %d/%d: %s" %(str(pid).zfill(2),fcnt,len(chunk),filename), flush=True)
-
-
-		#
-		# Sample frames from the video at the specified sampling interval
-		# and put in a buffer
-		#
-		count = 0	
-		for i in range(nframes):
-			success, image = invid.read()
-			if success:
-				if((i % args.interval)==0):
-					inference_buffer[count] = cv2.resize(image, (640,640))
-					count += 1
-				if(args.progressbar == 'TQDM' and (i % 2000)==0):   # keep the tqdm multi-bar interface looking clean
-					clear_screen()
-					pbar.refresh()
-			else:
-				break
-	  
-			if(args.progressbar == 'TQDM'): 
-				pbar.update(1)
-
-		if(args.progressbar == 'TQDM'):
-			clear_screen()
-			pbar.reset(total=nbatches*args.interval)	
-			pbar.refresh()
-		else:
-			print("pid=%s   WAITING for AI: %s" %(str(pid).zfill(2),filename), flush=True)
-
-		##########################################################################################
-		# LOCKING SECTION - whether CPU or GPU, we need to wait our turn for inference resources #
-		##########################################################################################
-
-		lock_acquired = pu_lock.acquire(timeout=0.1)
-		while not lock_acquired:  # While the lock is not acquired
-			if(args.progressbar == 'TQDM'):
-				pbar.set_description("pid=%s   WAITING for AI: %s" %(str(pid).zfill(2),filename))
-				pbar.update(0)  
-			else:
-				print("pid=%s   WAITING for AI: %s" %(str(pid).zfill(2),filename), flush=True)
-
-			lock_acquired = pu_lock.acquire(timeout=0.1) 
-
-		if(args.progressbar == 'TQDM'):
-			clear_screen()
-			pbar.set_description("pid=%s AI Detection %d/%d: %s" %(str(pid).zfill(2),fcnt,len(chunk),filename))
-			pbar.refresh()
-		else:
-			print("pid=%s AI Detection %d/%d: %s" %(str(pid).zfill(2),fcnt,len(chunk),filename), flush=True)
+		while(success):
 
 
-		# Iterate over the array to copy batches
-		tiger_frames = {}	
-		for b in range(nbatches):
-	    
-			start_idx = b * args.batchsize
-			end_idx = start_idx + args.batchsize
-			if(end_idx > count):
-				end_idx = count
+			# state transition from SCANNING blanks to DETECTION
+			if(state == SCANNING and this_detection == True):
+				print("State transition from SCANNING blanks to DETECTION", flush=True)
+				state = DETECTION
 
-			batch_images = inference_buffer[start_idx:end_idx] 
-	   
-			it = torch.from_numpy(batch_images).permute(0, 3, 1, 2).float() / 255.0  
-    
-			with(torch.no_grad()):
-				with(autocast()):
-					image_tensors = it.to(device)
-		    
-					try:
-						detections_tensor = model(image_tensors)
+				# create a clip
+				fn = os.path.basename(filename)
+				clip_name = os.path.splitext(fn)[0] + "_{:03d}".format(clip_number) + ".mp4"
+				clip_path = os.path.join(args.output, clip_name)
+				fourcc = cv2.VideoWriter_fourcc(*'mp4v')	
+				clip = cv2.VideoWriter(clip_path, fourcc, fps, (width,height))
+				clip_number += 1
 				
-						detections = non_max_suppression(detections_tensor)
-					except RuntimeError as e:
-						if "CUDA out of memory" in str(e):
-							print("CUDA out of memory error encountered.", flush=True)
-							time.sleep(10)
-							exit(0)
+				# flush the current sliding window buffer to the new clip
+				for fc in buffer_chunks:
+					write_clip(clip, fc)
+				buffer_chunks = []
+				write_clip(clip, frame_chunk)
 
-			for i, d in enumerate(detections):
-				frame_idx = (b*args.batchsize+i)*args.interval
-				dn = d.cpu().detach().numpy()
-				if len(dn):
-					tiger_frames[frame_idx] = dn
-				del dn
+			# possible state transition from DETECTION back to SCANNING
+			elif(state == DETECTION and this_detection == False):
+    
+				print("state  == DETECTION, this_detection == False", flush=True)
+				print("grabbing forward_buffer...")
+    
+				# lets look into the future 2X to make sure we can split the clip
+				forward_buf = []
+				forward_buf.append(frame_chunk)
+				last_forward_detection_idx = -1
+				for i in range(2*args.buffer-1):
+					frame_chunk, forward_detection, success = get_video_chunk(invid, model, args.interval, pu_lock)
+					if(success):
+						forward_buf.append(frame_chunk)
+						if(forward_detection):
+							if(i > last_forward_detection_idx):
+								last_forward_detection_idx = i
 
-			if(usegpu):
-				torch.cuda.empty_cache()
+				if(last_forward_detection_idx < 0):   # no positive detections in forward buffer
+					print("   NO positive detections in the forward buffer.  last_forward_detection_idx=", last_forward_detection_idx,  flush=True)
+   
+					# some debugging of buffers
+					debug_buffer = get_debug_buffer(buffer_chunks)
+					print("   Primary buffer: ", debug_buffer)
+					debug_buffer = get_debug_buffer(forward_buf)
+					print("   Forward Buffer: ", debug_buffer)
 
-			if(args.progressbar == 'TQDM'):	
-				pbar.update(args.interval)
+					print("  Flushing primary buffer", flush=True)
+					for f in buffer_chunks:
+						write_clip(clip, f)
+					buffer_chunks = []
 
-		if(usegpu==True):
-			torch.cuda.empty_cache()
+					# flush the first part of the forward buffer (up to length args.buffer) to disk
+					if(len(forward_buf)>args.buffer):
+						extent = args.buffer  
+					else:
+						extent = len(forward_buf)	
 
-		pu_lock.release()
-		##################################################################
-		# END LOCKING SECTION                                            #
-		##################################################################
+					for i in range(extent):
+						frame_chunk = forward_buf.pop(0)		
+						write_clip(clip, frame_chunk)	
 
-		if(args.progressbar == 'TQDM'):
-			clear_screen()
-			pbar.refresh()
+					# put whatever is left of the forward buffer onto the end of primary buffer
+					buffer_chunks += forward_buf
+					forward_buf = []
 
-		    
-		groups = dict(enumerate(grouper(tiger_frames.keys()), 0))
+					clip.release()	
+					print("***WROTE CLIP TO DISK***")
+					# some debugging of buffers
+					debug_buffer = get_debug_buffer(buffer_chunks)
+					print("   Primary buffer: ", debug_buffer)
+					debug_buffer = get_debug_buffer(forward_buf)
+					print("   Forward Buffer: ", debug_buffer)
+					print("Changing state back to SCANNING...", flush=True)
+					state = SCANNING     # complete state transition back to SCANNING
 
-		#
-		# Merge groups which overlap due to buffer_frames
-		#
-		extents = []
-		for g in groups:
-			start_frame = groups[g][0]-buffer_frames
-			if(start_frame < 0):
-				start_frame = 0
+				else:   # positive detection in the forward buffer
+    
+					print("  Positive detections in the forward buffer.  last_forward_detection_idx=", last_forward_detection_idx, flush=True)
 
-			end_frame = groups[g][len(groups[g])-1]+buffer_frames
-			if(end_frame >= nframes):
-				end_frame = nframes-1
+					# some debugging of buffers
+					debug_buffer = get_debug_buffer(buffer_chunks)
+					print("   Primary buffer: ", debug_buffer)
+					debug_buffer = get_debug_buffer(forward_buf)
+					print("   Forward Buffer: ", debug_buffer)
+
+					print("  Flushing buffer", flush=True)
+					for f in buffer_chunks:
+						write_clip(clip, f)
+					buffer_chunks = []
+
+					#write_clip(clip, frame_chunk)
+				
+					print("  Flushing all chunks in forward buffer up to the last_forward_detection_idx: ", last_forward_detection_idx)
+					for i in range(last_forward_detection_idx):  # flush all chunks in forward buffer up to the last positive detection
+						f = forward_buf.pop(0)		
+						write_clip(clip, f)	
+					
+					buffer_chunks = forward_buf	
+
+
+			elif(state == DETECTION and this_detection == True):
+
+				print("state == DETECTION, and this_detection == TRUE", flush=True)
+				write_clip(clip, frame_chunk)
 	
-			extents.append([start_frame,end_frame])
+			else:   # state == SCANNING, this_detection == FALSE
+				print("state == SCANNING, this_detection == FALSE.  Continuing to see nothing....", flush=True) 
 
-		dels = []
-		for i in range(len(extents) - 1):
-			cur = extents[i]
-			nxt = extents[i+1]
+				# add this new chunk to the sliding window
+				#print("Adding new chunk to sliding window...", flush=True)
+				buffer_chunks.append(frame_chunk)
+				if(len(buffer_chunks)>args.buffer):
+					buffer_chunks.pop(0)
+    
+		
+			frame_chunk, this_detection, success = get_video_chunk(invid, model, args.interval, pu_lock)
 
-			if(cur[1] >= nxt[0]):
-				extents[i+1][0]=cur[0]
-				dels.append(i)
+			#with report_lock:
+			#	report(pid, [filename, clip_path, fps, start_frame, end_frame, min_conf, max_conf, mean_conf])
 
-		new_extents = []
-		cnt = 0
-		for i in range(len(extents)):
-			if(not i in dels):
-				new_extents.append(extents[i])
-	
-
-		i = 0
-		new_groups = {}
-		tkeys = list(tiger_frames.keys())
-		for e in new_extents:
-			min_index = bisect.bisect_left(tkeys,  e[0])
-			max_index = bisect.bisect_right(tkeys, e[1])	
-
-			new_groups[i] = []
-			for c in range(min_index, max_index):
-				new_groups[i].append(tkeys[c])
-		    
-			i+=1
-
-
-		for i,g in enumerate(new_groups):
-
-			if(args.progressbar == 'TQDM'):
-				pbar.set_description("pid=%s  Saving Clip %d/%d: %s" %(str(pid).zfill(2),i+1,len(new_groups),filename))
-				pbar.refresh()
-			else:
-				print("pid=%s  Saving Clip %d/%d: %s" %(str(pid).zfill(2),i+1,len(new_groups),filename), flush=True)
-
-			min_conf, max_conf, mean_conf = confidence(new_groups[g], tiger_frames) 
-
-			fn = os.path.basename(filename)
-			clip_name = os.path.splitext(fn)[0] + "_{:03d}".format(g) + ".mp4"
-			clip_path = os.path.join(args.output, clip_name)
-
-			fourcc = cv2.VideoWriter_fourcc(*'mp4v')	
-			outvid = cv2.VideoWriter(clip_path, fourcc, fps, (width,height))
-
-			start_frame = new_groups[g][0]-buffer_frames
-			if(start_frame < 0):
-				start_frame = 0
-	    
-			end_frame = new_groups[g][len(new_groups[g])-1]+buffer_frames
-			if(end_frame >= nframes):
-				end_frame = nframes-1;
-
-			if(args.progressbar == 'TQDM'):
-				pbar.reset(total=end_frame-start_frame)	
-
-			invid.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-			for f in range(start_frame, end_frame):
-				if(args.progressbar == 'TQDM'):	
-					pbar.refresh()
-				success, image = invid.read()
-				if(success):
-					outvid.write(label(image,f,fps))
-					if(args.progressbar == 'TQDM'):
-						pbar.update(1)
-				else:
-					break
-
-			outvid.release()
-
-			report(report_lock, pid, [filename, clip_path, fps, start_frame, end_frame, min_conf, max_conf, mean_conf])
-
-			if(args.progressbar == 'TQDM'):	
-				clear_screen()
-	    
+		try:
+			clip.release()
+		except:
+			break
+			 
 		invid.release()
 
-		if(args.progressbar == 'TQDM'):
-			clear_screen()
-			pbar.refresh()
-		fcnt += 1
-
-	if(args.progressbar == 'TQDM'):
-		pbar.set_description("pid=%s  Process Complete!" %(str(pid).zfill(2)))
-		pbar.refresh()
-	else:
-		print("pid=%s  Process Complete!" %(str(pid).zfill(2)), flush=True)
-
+		exit(0)
 
 
 ########################################
@@ -541,7 +492,6 @@ def main():
 	print("SAMPLING INTERVAL: ", args.interval, "frames")
 	print("  BUFFER DURATION: ", args.buffer, "seconds")
 	print(" CONCURRENT PROCS: ", args.jobs)
-	print("       BATCH SIZE: ", args.batchsize)
 	print("          USE GPU: ", usegpu)
 	print("*********************************************\n\n", flush=True)
 
@@ -567,10 +517,6 @@ def main():
 	for p in processes:
 		p.join()
 
-	if(args.progressbar == 'TQDM'):
-		clear_screen()	
-		reset_screen()	
-    
 	print("Total time to process %d videos: %.02f seconds" %(len(files), time.time()-all_start_time))
 	print("Report file saved to %s" %args.report)
 	print("\nDONE\n")
