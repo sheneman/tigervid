@@ -16,20 +16,16 @@
 import os, sys, time, pathlib
 import argparse
 from multiprocessing import Process, current_process, freeze_support, Lock, RLock, Manager
-import bisect
 import cv2
-import uuid
 import math
+import nvidia_smi
 import logging
 import random
-from PIL import Image
 import torch
-from torch.cuda.amp import autocast
 import glob
 import numpy as np
 import imageio
 from tqdm import tqdm	
-from functools import reduce
 
 
 DEFAULT_INPUT_DIR	= "inputs"
@@ -37,8 +33,8 @@ DEFAULT_OUTPUT_DIR	= "outputs"
 DEFAULT_LOGGING_DIR 	= "logs"
 
 DEFAULT_MODEL            = 'md_v5a.0.0.pt'
-DEFAULT_INTERVAL         = 30  # number of frames between samples
-DEFAULT_BUFFER_INTERVALS = 5   # number of intervals of video to include before first detection and after last detection
+DEFAULT_INTERVAL         = 1.0   # number of seconds between samples
+DEFAULT_PADDING		 = 5.0   # number of seconds of video to include before first detection and after last detection in a clip
 DEFAULT_REPORT_FILENAME  = "report.csv"
 DEFAULT_NPROCS           = 1
 DEFAULT_PROGRESSBAR	 = 'TQDM'
@@ -51,14 +47,14 @@ parser = argparse.ArgumentParser(prog='tigervid', description='Analyze videos an
 parser.add_argument('input',  metavar='INPUT_DIR',  default=DEFAULT_INPUT_DIR,  help='Path to input directory containing MP4 videos')
 parser.add_argument('output', metavar='OUTPUT_DIR', default=DEFAULT_OUTPUT_DIR, help='Path to output directory for clips and metadatas')
 
-parser.add_argument('-m', '--model', 	   type=str, default=DEFAULT_MODEL, help='Path to the PyTorch model weights file (DEFAULT: '+DEFAULT_MODEL+')')
-parser.add_argument('-i', '--interval',    type=int, default=DEFAULT_INTERVAL, help='Number of frames to read between sampling with AI (DEFAULT: '+str(DEFAULT_INTERVAL)+')')
-parser.add_argument('-b', '--buffer', 	   type=int, default=DEFAULT_BUFFER_INTERVALS, help='Number of frames to prepend and append to clip (DEFAULT: '+str(DEFAULT_BUFFER_INTERVALS)+')')
-parser.add_argument('-r', '--report', 	   type=str, default=DEFAULT_REPORT_FILENAME, help='Name of report metadata (DEFAULT: '+DEFAULT_REPORT_FILENAME+')')
-parser.add_argument('-j', '--jobs', 	   type=int, default=DEFAULT_NPROCS, help='Number of concurrent (parallel) processes (DEFAULT: '+str(DEFAULT_NPROCS)+')')
-parser.add_argument('-l', '--logging', 	   type=str, default=DEFAULT_LOGGING_DIR, help='The directory for log files (DEFAULT: '+str(DEFAULT_LOGGING_DIR)+')')
+parser.add_argument('-m', '--model',	type=str,   default=DEFAULT_MODEL, help='Path to the PyTorch model weights file (DEFAULT: '+DEFAULT_MODEL+')')
+parser.add_argument('-i', '--interval', type=float, default=DEFAULT_INTERVAL, help='Number of seconds between AI sampling/detection (DEFAULT: '+str(DEFAULT_INTERVAL)+')')
+parser.add_argument('-p', '--padding',  type=float, default=DEFAULT_PADDING, help='Number of seconds of video to pad on front and end of a clip (DEFAULT: '+str(DEFAULT_PADDING)+')')
+parser.add_argument('-r', '--report',   type=str,   default=DEFAULT_REPORT_FILENAME, help='Name of report metadata (DEFAULT: '+DEFAULT_REPORT_FILENAME+')')
+parser.add_argument('-j', '--jobs',	type=int,   default=DEFAULT_NPROCS, help='Number of concurrent (parallel) processes (DEFAULT: '+str(DEFAULT_NPROCS)+')')
+parser.add_argument('-l', '--logging',	type=str,   default=DEFAULT_LOGGING_DIR, help='The directory for log files (DEFAULT: '+str(DEFAULT_LOGGING_DIR)+')')
 
-parser.add_argument('-p', '--progressbar', type=str, default=DEFAULT_PROGRESSBAR, help='The mode of the progress bar.  Either \'TQDM\' or \'none\' (DEFAULT: '+str(DEFAULT_PROGRESSBAR)+')')
+parser.add_argument('-t', '--tqdm',	type=str, default=DEFAULT_PROGRESSBAR, help='The mode of the progress bar.  Either \'TQDM\' or \'none\' (DEFAULT: '+str(DEFAULT_PROGRESSBAR)+')')
 
 
 group = parser.add_mutually_exclusive_group()
@@ -106,11 +102,17 @@ torch.device(device)
 
 if __name__ != '__main__':
 	logging.getLogger('torch.hub').setLevel(logging.ERROR)
-	if(os.path.exists(YOLODIR)):
-		model = torch.hub.load(YOLODIR, 'custom', path=args.model, _verbose=False, verbose=False, source='local')
-	else:
-		model = torch.hub.load('ultralytics/yolov5', 'custom', path=args.model, _verbose=False, verbose=False)
-	model.to(device)
+	    
+	try:
+		if(os.path.exists(YOLODIR)):
+			model = torch.hub.load(YOLODIR, 'custom', path=args.model, _verbose=False, verbose=False, source='local')
+		else:
+			model = torch.hub.load('ultralytics/yolov5', 'custom', path=args.model, _verbose=False, verbose=False)
+
+		model.to(device)
+	except:
+		print("COULD NOT DEPLOY MODEL TO DEVICE (GPU, etc.)")
+		sys.exit(-1)
 
 
 
@@ -165,6 +167,31 @@ def reset_screen():
 	if(os.name != 'nt'):
 		os.system('reset')
 
+def human_size(bytes, units=[' bytes','KB','MB','GB','TB', 'PB', 'EB']):
+	return str(bytes) + units[0] if bytes < 1024 else human_size(bytes>>10, units[1:])
+
+def get_gpu_info():
+	nvidia_smi.nvmlInit()
+
+	deviceCount = nvidia_smi.nvmlDeviceGetCount()
+	gpu_info = []
+	gpu_info.append(deviceCount)
+	for i in range(deviceCount):
+		handle = nvidia_smi.nvmlDeviceGetHandleByIndex(i)
+		mem_info = nvidia_smi.nvmlDeviceGetMemoryInfo(handle)
+
+		mem_free  = mem_info.free
+		mem_total = mem_info.total
+		mem_used  = mem_info.used
+
+		gpu_info.append((mem_info.total, mem_info.used, mem_info.free))
+
+		#print("Device {}: {}, Memory : ({:.2f}% free): {}(total), {} (free), {} (used)".format(i, nvidia_smi.nvmlDeviceGetName(handle), 100*mem_info.free/mem_info.total, human_size(mem_info.total), human_size(mem_info.free), human_size(mem_info.used)))
+
+	nvidia_smi.nvmlShutdown()
+
+	return(gpu_info)
+
 
 
 def chunks(filenames, n):
@@ -189,8 +216,6 @@ def chunks(filenames, n):
 
 
 
-	
-
 #
 # retrieves chunk of video frames of size interval_sz
 # returns: 
@@ -202,64 +227,74 @@ def get_video_chunk(invid, model, interval_sz, pu_lock):
 
 	global chunk_idx
 
-	print("Getting chunk: %d" %chunk_idx)
-	#print("Interval Size: %d" %interval_sz)
+	#print("Getting chunk: %d" %chunk_idx)
+
+	res = {}
+	res["chunk_idx"] = chunk_idx
 
 	buf = []
 	for i in range(interval_sz):
 		success, image = invid.read()
 		if(success):
-			#print("success")
 			buf.append(image)
 		else:
-			#print("failure")
-			res = (chunk_idx, buf)
+			#print("Error:  Could not read frame chunk: %d" %chunk_idx)
 			chunk_idx += 1
-			return(res, False, False)
+			return(None, False)
+			
 
 	inference_frame = cv2.resize(image, (640,640))
-	#print("About to acquire pu_lock", flush=True)
 	with pu_lock:
 		try:
 			results = model(inference_frame).pandas().xyxy[0]
 		except:
-			print("Error: Could not run model inference on this frame")
-			res = (chunk_idx, buf)
-			chunk_idx += 1
-			return(res, False, False)
+			print("Error: Could not run model inference on frame from chunk index: %d" %chunk_idx)
+			sys.exit(-1)
+			#chunk_idx += 1
+			#return(None, False)
 
-	#print("After lock...", flush=True)
-	
 
-	ntargets = results.shape[0]
-	if(ntargets):
+	if(results.shape[0]):
 		detection = True
 	else:
 		detection = False
     
-	print("----> Detection: ", detection)
+	#print("----> Detection is [%s] for chunk index: %d" %(str(detection), chunk_idx))
 
-	res = (chunk_idx, buf)
+	res["buffer"]	 = buf
+	res["detection"] = detection
+
 	chunk_idx+=1
-	return(res, detection, True)
+
+	return(res, True)
 
 
 def write_clip(clip, frame_chunk):
-	frame_chunk_idx, buf = frame_chunk
 
-	print("Writing: ", frame_chunk_idx)
+	global most_recent_written_chunk 
+
+
+	if(frame_chunk["chunk_idx"] <= most_recent_written_chunk):
+		print("***ALERT:  Trying to write the same chunk %d twice or out of order!!!  MOST RECENT CHUNK WRITTEN: %d" %(frame_chunk["chunk_idx"], most_recent_written_chunk))
+		return
+
+
+	#print("Writing: [%d, %s]" %(frame_chunk["chunk_idx"], str(frame_chunk["detection"])))
+
+	most_recent_written_chunk = frame_chunk["chunk_idx"]
 	
-	for frame in buf:
+	for frame in frame_chunk["buffer"]:
 		clip.write(frame)
 		
 
-def get_debug_buffer(buf):
-	indices = [] 
-	for f in buf: 
-		indices.append(f[0])
 
-	return(indices)
-	
+def get_debug_buffer(frame_chunk):
+
+	debug_info = ""
+	for fc in frame_chunk: 
+		debug_info += "[%d|%s] " %(fc["chunk_idx"],fc["detection"]) 
+
+	return(debug_info)
 
 
 
@@ -269,11 +304,13 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 	global args
 	global model
 	global chunk_idx
+	global most_recent_written_chunk
 
 	# lets pace ourselves on startup to help avoid general race conditions
 	time.sleep(pid*1)
 
-	for filename in chunk:
+	for fcnt, filename in enumerate(chunk):
+
 
 		while(True):
 			try:
@@ -304,22 +341,45 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 
 		state = SCANNING
 
-		chunk_idx = 0
-		clip_number = 0
+		interval_frames	    = int(args.interval*fps)
+		padding_intervals   = math.ceil(args.padding*fps/interval_frames)
+		nchunks		    = math.ceil(nframes/interval_frames)
+		chunk_idx     = 0
+		clip_number   = 0
 		buffer_chunks = []
-		frame_chunk, this_detection, success = get_video_chunk(invid, model, args.interval, pu_lock)
-		
-		
-		print("NUMBER OF FRAMES: ", nframes)
-		print("NUMBER OF CHUNKS: ", math.ceil(nframes/args.interval))
+		forward_buf   = []
+
+		most_recent_written_chunk = -1
+	
+		#print("NUMBER OF FRAMES: ", nframes)
+		#print("NUMBER OF CHUNKS: ", nchunks)
+		#print("FRAMES PER INTERVAL: ", interval_frames)	
+		#print("PADDING INTERVALS: ", padding_intervals)
+
+		#clear_screen()
+		pbar = tqdm(total=nframes,position=pid,ncols=100,unit=" frames",leave=False,mininterval=0.5,file=sys.stdout)
+		pbar.set_description("pid=%s Processing video %d/%d: %s" %(str(pid).zfill(2),fcnt+1,len(chunk),filename))
+
+		frame_chunk, success = get_video_chunk(invid, model, interval_frames, pu_lock)
+		pbar.update(interval_frames)
 
 		while(success):
-
+	
+			#print("CHUNK_IDX: %d/%d" %(chunk_idx, nchunks))
+			if(chunk_idx > nchunks):
+				#print("OUT OF CHUNKS TO READ.  BAILING")
+				return
 
 			# state transition from SCANNING blanks to DETECTION
-			if(state == SCANNING and this_detection == True):
-				print("State transition from SCANNING blanks to DETECTION", flush=True)
+			if(state == SCANNING and frame_chunk["detection"] == True):
+				#print("State transition from SCANNING blanks to DETECTION", flush=True)
 				state = DETECTION
+
+				# some debugging of buffers
+				#debug_buffer = get_debug_buffer(buffer_chunks)
+				#print("   Primary buffer: ", debug_buffer)
+				#debug_buffer = get_debug_buffer(forward_buf)
+				#print("   Forward Buffer: ", debug_buffer)
 
 				# create a clip
 				fn = os.path.basename(filename)
@@ -336,40 +396,50 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 				write_clip(clip, frame_chunk)
 
 			# possible state transition from DETECTION back to SCANNING
-			elif(state == DETECTION and this_detection == False):
+			elif(state == DETECTION and frame_chunk["detection"] == False):
     
-				print("state  == DETECTION, this_detection == False", flush=True)
-				print("grabbing forward_buffer...")
+				#print("state  == DETECTION, detection == False", flush=True)
+				#
+				# some debugging of buffers
+				#debug_buffer = get_debug_buffer(buffer_chunks)
+				#print("   Primary buffer: ", debug_buffer)
+				#debug_buffer = get_debug_buffer(forward_buf)
+				#print("   Forward Buffer: ", debug_buffer)
+				#
+				#print("grabbing forward_buffer...")
     
 				# lets look into the future 2X to make sure we can split the clip
 				forward_buf = []
 				forward_buf.append(frame_chunk)
-				last_forward_detection_idx = -1
-				for i in range(2*args.buffer-1):
-					frame_chunk, forward_detection, success = get_video_chunk(invid, model, args.interval, pu_lock)
-					if(success):
+				forward_detection_flag = frame_chunk["detection"]
+				for i in range(0,2*padding_intervals+1):   #SHENEMAN
+					frame_chunk, success = get_video_chunk(invid, model, interval_frames, pu_lock)
+					pbar.update(interval_frames)
+					if(success and frame_chunk["chunk_idx"]<=nchunks):
 						forward_buf.append(frame_chunk)
-						if(forward_detection):
-							if(i > last_forward_detection_idx):
-								last_forward_detection_idx = i
+						if(frame_chunk["detection"]):
+							forward_detection_flag = True
+				#	else:
+				#		print("ELSE: success and frame_chunk[0]<=nchunks")
+					
 
-				if(last_forward_detection_idx < 0):   # no positive detections in forward buffer
-					print("   NO positive detections in the forward buffer.  last_forward_detection_idx=", last_forward_detection_idx,  flush=True)
+				if(forward_detection_flag == False):   # no positive detections in forward buffer
+					#print("   NO positive detections in the forward buffer.", flush=True)
    
 					# some debugging of buffers
-					debug_buffer = get_debug_buffer(buffer_chunks)
-					print("   Primary buffer: ", debug_buffer)
-					debug_buffer = get_debug_buffer(forward_buf)
-					print("   Forward Buffer: ", debug_buffer)
+					#debug_buffer = get_debug_buffer(buffer_chunks)
+					#print("   Primary buffer: ", debug_buffer)
+					#debug_buffer = get_debug_buffer(forward_buf)
+					#print("   Forward Buffer: ", debug_buffer)
 
-					print("  Flushing primary buffer", flush=True)
+					#print("  Flushing primary buffer", flush=True)
 					for f in buffer_chunks:
 						write_clip(clip, f)
 					buffer_chunks = []
 
-					# flush the first part of the forward buffer (up to length args.buffer) to disk
-					if(len(forward_buf)>args.buffer):
-						extent = args.buffer  
+					# flush the first part of the forward buffer disk up to padding_intervals
+					if(len(forward_buf)>padding_intervals):
+						extent = padding_intervals
 					else:
 						extent = len(forward_buf)	
 
@@ -382,56 +452,92 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 					forward_buf = []
 
 					clip.release()	
-					print("***WROTE CLIP TO DISK***")
+					#print("***WROTE CLIP TO DISK***")
+
 					# some debugging of buffers
-					debug_buffer = get_debug_buffer(buffer_chunks)
-					print("   Primary buffer: ", debug_buffer)
-					debug_buffer = get_debug_buffer(forward_buf)
-					print("   Forward Buffer: ", debug_buffer)
-					print("Changing state back to SCANNING...", flush=True)
+					#debug_buffer = get_debug_buffer(buffer_chunks)
+					#print("   Primary buffer: ", debug_buffer)
+					#debug_buffer = get_debug_buffer(forward_buf)
+					#print("   Forward Buffer: ", debug_buffer)
+					#
+					#print("Changing state back to SCANNING...", flush=True)
 					state = SCANNING     # complete state transition back to SCANNING
 
 				else:   # positive detection in the forward buffer
     
-					print("  Positive detections in the forward buffer.  last_forward_detection_idx=", last_forward_detection_idx, flush=True)
+					#print("  Positive detections in the forward buffer.", flush=True)
 
 					# some debugging of buffers
-					debug_buffer = get_debug_buffer(buffer_chunks)
-					print("   Primary buffer: ", debug_buffer)
-					debug_buffer = get_debug_buffer(forward_buf)
-					print("   Forward Buffer: ", debug_buffer)
-
-					print("  Flushing buffer", flush=True)
+					#debug_buffer = get_debug_buffer(buffer_chunks)
+					#print("   Primary buffer: ", debug_buffer)
+					#debug_buffer = get_debug_buffer(forward_buf)
+					#print("   Forward Buffer: ", debug_buffer)
+                                        #
+					#print("  Flushing buffer", flush=True)
 					for f in buffer_chunks:
 						write_clip(clip, f)
 					buffer_chunks = []
 
 					#write_clip(clip, frame_chunk)
+
+					last_forward_detection_idx = -1
+
+					for i,f in enumerate(forward_buf):
+						if(f["detection"]):
+							last_forward_detection_idx = i
+
+					#print("  Flushing all chunks in forward buffer up to and including the last_forward_detection_idx: ", last_forward_detection_idx)
+
+					# some debugging of buffers
+					#debug_buffer = get_debug_buffer(buffer_chunks)
+					#print("   Primary buffer: ", debug_buffer)
+					#debug_buffer = get_debug_buffer(forward_buf)
+					#print("   Forward Buffer: ", debug_buffer)
+
+
+					for i in range(last_forward_detection_idx+1):
+						write_clip(clip, forward_buf[i])
+   
+					if(last_forward_detection_idx < len(forward_buf)-1): 
+						forward_buf = forward_buf[last_forward_detection_idx+1:]
+					else:
+						forward_buf = []
 				
-					print("  Flushing all chunks in forward buffer up to the last_forward_detection_idx: ", last_forward_detection_idx)
-					for i in range(last_forward_detection_idx):  # flush all chunks in forward buffer up to the last positive detection
-						f = forward_buf.pop(0)		
-						write_clip(clip, f)	
-					
-					buffer_chunks = forward_buf	
+					buffer_chunks = forward_buf	    
+					forward_buf = []
+
+					# some debugging of buffers
+					#debug_buffer = get_debug_buffer(buffer_chunks)
+					#print("   Primary buffer: ", debug_buffer)
+					#debug_buffer = get_debug_buffer(forward_buf)
+					#print("   Forward Buffer: ", debug_buffer)
+                                        #
+					#print("\n")
 
 
-			elif(state == DETECTION and this_detection == True):
+			elif(state == DETECTION and frame_chunk["detection"] == True):
 
-				print("state == DETECTION, and this_detection == TRUE", flush=True)
+				if(len(buffer_chunks)>0):
+					#print("Flushing Primary Buffer...")		    
+					for ch in buffer_chunks:
+						write_clip(clip, ch)
+					buffer_chunks = []
+
+				#print("state == DETECTION, and detection == TRUE", flush=True)
 				write_clip(clip, frame_chunk)
 	
-			else:   # state == SCANNING, this_detection == FALSE
-				print("state == SCANNING, this_detection == FALSE.  Continuing to see nothing....", flush=True) 
+			else:   # state == SCANNING, frame_chunk["detection"] == FALSE
+				#print("state == SCANNING, detection == FALSE.  Continuing to see nothing....", flush=True) 
 
 				# add this new chunk to the sliding window
 				#print("Adding new chunk to sliding window...", flush=True)
 				buffer_chunks.append(frame_chunk)
-				if(len(buffer_chunks)>args.buffer):
+				if(len(buffer_chunks)>padding_intervals):
 					buffer_chunks.pop(0)
     
 		
-			frame_chunk, this_detection, success = get_video_chunk(invid, model, args.interval, pu_lock)
+			frame_chunk, success = get_video_chunk(invid, model, interval_frames, pu_lock)
+			pbar.update(interval_frames)
 
 			#with report_lock:
 			#	report(pid, [filename, clip_path, fps, start_frame, end_frame, min_conf, max_conf, mean_conf])
@@ -443,7 +549,9 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 			 
 		invid.release()
 
-		exit(0)
+	pbar.close()
+	#clear_screen()
+
 
 
 ########################################
@@ -454,6 +562,13 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 def main():
 
 	all_start_time = time.time()
+
+	if(args.gpu == True):
+		gpu_info = get_gpu_info()
+		print("Detected %d CUDA GPUs" %(gpu_info[0]))
+		for g in range(1,len(gpu_info)):
+			mem_total, mem_used, mem_free = gpu_info[g]
+			print("GPU:{}, Memory : ({:.2f}% free): {}(total), {} (free), {} (used)".format(g-1, 100*mem_free/mem_total, human_size(mem_total), human_size(mem_free), human_size(mem_used)))
 
 	freeze_support()  # For Windows support - multiprocessing with tqdm
 
@@ -484,15 +599,15 @@ def main():
 	****************************************************
 	''', flush=True)
 
-	print("           BEGINNING PROCESSING          ")
+	print("          BEGINNING PROCESSING          ")
 	print("*********************************************")
-	print("        INPUT_DIR: ", args.input)
-	print("       OUTPUT_DIR: ", args.output)
-	print("    MODEL WEIGHTS: ", args.model)
-	print("SAMPLING INTERVAL: ", args.interval, "frames")
-	print("  BUFFER DURATION: ", args.buffer, "seconds")
-	print(" CONCURRENT PROCS: ", args.jobs)
-	print("          USE GPU: ", usegpu)
+	print("         INPUT_DIR: ", args.input)
+	print("        OUTPUT_DIR: ", args.output)
+	print("     MODEL WEIGHTS: ", args.model)
+	print(" SAMPLING INTERVAL: ", args.interval, "seconds")
+	print("  PADDING DURATION: ", args.padding, "seconds")
+	print("  CONCURRENT PROCS: ", args.jobs)
+	print("           USE GPU: ", usegpu)
 	print("*********************************************\n\n", flush=True)
 
 	path = os.path.join(args.input, "*.mp4")
@@ -514,8 +629,33 @@ def main():
 		processes.append(p)
 		p.start()
 
-	for p in processes:
-		p.join()
+
+	while any(p.is_alive() for p in processes):
+		for p in processes:
+			if p.exitcode is not None and p.exitcode != 0:
+				print(f"Terminating due to failure in process {p.pid}")
+
+				for p in processes:
+					p.terminate()
+
+				time.sleep(2)
+				clear_screen()
+				reset_screen()
+
+				print("\n")
+				print("*****************************************************************************")
+				print("SOMETHING WENT HORRIBLY WRONG:")
+				print("Failure to run model within system resources (e.g. GPU RAM).")
+				print("Please reduce the number of concurrent jobs (i.e., --jobs <n>) and try again!")
+				print("*****************************************************************************")
+				print("\n\n")
+
+				return
+
+		time.sleep(0.5)  # Check periodically
+
+	clear_screen()
+	reset_screen()
 
 	print("Total time to process %d videos: %.02f seconds" %(len(files), time.time()-all_start_time))
 	print("Report file saved to %s" %args.report)
