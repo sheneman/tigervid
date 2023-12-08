@@ -42,7 +42,7 @@ python3 -m venv venv
 
 pip install -U pip  
 pip install torch  
-pip install pillow 
+pip install pillow  
 pip install nvidia-ml-py3  
 pip install opencv-python  
 pip install imageio[ffmpeg]  
