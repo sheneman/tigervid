@@ -43,12 +43,12 @@ python3 -m venv venv
 pip install -U pip  
 pip install torch  
 pip install pillow 
-pip install nvidia-ml-py3
+pip install nvidia-ml-py3  
 pip install opencv-python  
 pip install imageio[ffmpeg]  
 pip install tqdm  
 pip install pandas  
-pip install requests
+pip install requests  
 
 **or** pip install -r requirements.txt  
 
