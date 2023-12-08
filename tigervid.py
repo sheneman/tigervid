@@ -4,7 +4,7 @@
 #
 # Luke Sheneman
 # sheneman@uidaho.edu
-# November 2023
+# December 2023
 #
 # Given a directory of videos, process each video to look for animals
 # Extracts video clips which include animals into destination directory
@@ -118,8 +118,14 @@ if __name__ != '__main__':
 
 def report(pid, report_list):
 
-	filename,clip_path,fps,start_frame,end_frame,min_conf,max_conf,mean_conf = report_list
-	s = "\"%s\", \"%s\", %d, %f, %d, %f, %d, %f, %.02f, %.02f, %.02f\n" %(filename, clip_path, start_frame, start_frame/fps, end_frame, end_frame/fps, end_frame-start_frame, (end_frame-start_frame)/fps, min_conf, max_conf, mean_conf)
+
+	filename,clip_path,fps,start_frame,end_frame,confidences = report_list
+
+	min_conf  = min(confidences)
+	max_conf  = max(confidences)
+	mean_conf = 0 if len(confidences) == 0 else sum(confidences)/len(confidences)
+
+	s = "\"%s\", \"%s\", %d, %.02f, %d, %.02f, %d, %.02f, %.02f, %.02f, %.02f\n" %(filename, clip_path, start_frame, start_frame/fps, end_frame, end_frame/fps, end_frame-start_frame, (end_frame-start_frame)/fps, min_conf, max_conf, mean_conf)
 
 	try:
 		report_file = open(args.report, "a")
@@ -137,27 +143,6 @@ def label(img, frame, fps):
 	cv2.putText(img, s, (200,100), cv2.FONT_HERSHEY_SIMPLEX, 1.75, (0,0,0), 6, cv2.LINE_AA) 	
 	cv2.putText(img, s, (200,100), cv2.FONT_HERSHEY_SIMPLEX, 1.75, (255,255,255), 3, cv2.LINE_AA) 	
 	return(img)
-
-
-def confidence(group, frames):
-	min = 9999.0
-	max = 0
-	sum = 0
-	count = 0
-	for i in group:
-		detections = frames[i]
-		for d in detections:
-			c = d[4]
-			if(c < min):
-			    min = c
-			if(c > max):
-			    max = c
-
-			count += 1
-			sum   += c
-	avg = sum/float(count)
-    
-	return(min, max, avg)
 
 
 def clear_screen():
@@ -219,8 +204,7 @@ def chunks(filenames, n):
 #
 # retrieves chunk of video frames of size interval_sz
 # returns: 
-#     interval frame buffer and chunk id
-#     detection (True/False)
+#     result as dict with keys:  {frame_buffer, detection (boolean), confidence score}
 #     success (True/False) 
 #
 def get_video_chunk(invid, model, interval_sz, pu_lock):
@@ -256,13 +240,16 @@ def get_video_chunk(invid, model, interval_sz, pu_lock):
 
 	if(results.shape[0]):
 		detection = True
+		confidence = results["confidence"].mean()
 	else:
 		detection = False
+		confidence = None
     
 	#print("----> Detection is [%s] for chunk index: %d" %(str(detection), chunk_idx))
 
-	res["buffer"]	 = buf
-	res["detection"] = detection
+	res["buffer"]	  = buf
+	res["detection"]  = detection
+	res["confidence"] = confidence
 
 	chunk_idx+=1
 
@@ -348,6 +335,7 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 		clip_number   = 0
 		buffer_chunks = []
 		forward_buf   = []
+		confidences   = []
 
 		most_recent_written_chunk = -1
 	
@@ -361,6 +349,9 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 		pbar.set_description("pid=%s Processing video %d/%d: %s" %(str(pid).zfill(2),fcnt+1,len(chunk),filename))
 
 		frame_chunk, success = get_video_chunk(invid, model, interval_frames, pu_lock)
+		if(frame_chunk["detection"] == True):
+			confidences.append(frame_chunk["confidence"])
+			
 		pbar.update(interval_frames)
 
 		while(success):
@@ -388,7 +379,12 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 				fourcc = cv2.VideoWriter_fourcc(*'mp4v')	
 				clip = cv2.VideoWriter(clip_path, fourcc, fps, (width,height))
 				clip_number += 1
-				
+			
+				# track the first frame of the clip for export to metadata report
+				if(len(buffer_chunks)>0):
+					clip_start_frame = buffer_chunks[0]["chunk_idx"]*interval_frames
+				else:
+					clip_start_frame = 0
 				# flush the current sliding window buffer to the new clip
 				for fc in buffer_chunks:
 					write_clip(clip, fc)
@@ -414,6 +410,8 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 				forward_detection_flag = frame_chunk["detection"]
 				for i in range(0,2*padding_intervals+1):   #SHENEMAN
 					frame_chunk, success = get_video_chunk(invid, model, interval_frames, pu_lock)
+					if(success and frame_chunk["detection"] == True):
+						confidences.append(frame_chunk["confidence"])
 					pbar.update(interval_frames)
 					if(success and frame_chunk["chunk_idx"]<=nchunks):
 						forward_buf.append(frame_chunk)
@@ -451,7 +449,11 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 					buffer_chunks += forward_buf
 					forward_buf = []
 
+					## WRITE CLIP TO DISK AND LOG
 					clip.release()	
+					clip_end_frame = (most_recent_written_chunk * interval_frames) + interval_frames
+					with report_lock:
+						report(pid, [filename, clip_path, fps, clip_start_frame, clip_end_frame, confidences])
 					#print("***WROTE CLIP TO DISK***")
 
 					# some debugging of buffers
@@ -537,13 +539,16 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
     
 		
 			frame_chunk, success = get_video_chunk(invid, model, interval_frames, pu_lock)
+			if(success and frame_chunk["detection"] == True):
+				confidences.append(frame_chunk["confidence"])
 			pbar.update(interval_frames)
 
-			#with report_lock:
-			#	report(pid, [filename, clip_path, fps, start_frame, end_frame, min_conf, max_conf, mean_conf])
 
 		try:
 			clip.release()
+			clip_end_frame = (most_recent_written_chunk * interval_frames) + interval_frames
+			with report_lock:
+				report(pid, [filename, clip_path, fps, clip_start_frame, clip_end_frame, confidences])
 		except:
 			break
 			 
