@@ -42,14 +42,13 @@ python3 -m venv venv
 
 pip install -U pip  
 pip install torch  
-pip install pillow  
+pip install pillow 
+pip install nvidia-ml-py3
 pip install opencv-python  
 pip install imageio[ffmpeg]  
 pip install tqdm  
 pip install pandas  
 pip install requests
-pip install tqdm
-pip install 
 
 **or** pip install -r requirements.txt  
 
@@ -61,7 +60,6 @@ This tool is intended to allow the user to optimize the runtime settings to opti
 ## Interpreting the results
 
 The derived video clips will be named based on the original video filename and will include sequential numbering.
-
 
 The reports file is a CSV file containing the following columns:  
 
