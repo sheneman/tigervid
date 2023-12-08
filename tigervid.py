@@ -36,8 +36,8 @@ DEFAULT_MODEL            = 'md_v5a.0.0.pt'
 DEFAULT_INTERVAL         = 1.0   # number of seconds between samples
 DEFAULT_PADDING		 = 5.0   # number of seconds of video to include before first detection and after last detection in a clip
 DEFAULT_REPORT_FILENAME  = "report.csv"
-DEFAULT_NPROCS           = 1
-DEFAULT_PROGRESSBAR	 = 'TQDM'
+DEFAULT_NPROCS           = 4
+DEFAULT_NOBAR		 = False
 
 YOLODIR = "yolov5"
 
@@ -47,15 +47,14 @@ parser = argparse.ArgumentParser(prog='tigervid', description='Analyze videos an
 parser.add_argument('input',  metavar='INPUT_DIR',  default=DEFAULT_INPUT_DIR,  help='Path to input directory containing MP4 videos')
 parser.add_argument('output', metavar='OUTPUT_DIR', default=DEFAULT_OUTPUT_DIR, help='Path to output directory for clips and metadatas')
 
-parser.add_argument('-m', '--model',	type=str,   default=DEFAULT_MODEL, help='Path to the PyTorch model weights file (DEFAULT: '+DEFAULT_MODEL+')')
-parser.add_argument('-i', '--interval', type=float, default=DEFAULT_INTERVAL, help='Number of seconds between AI sampling/detection (DEFAULT: '+str(DEFAULT_INTERVAL)+')')
-parser.add_argument('-p', '--padding',  type=float, default=DEFAULT_PADDING, help='Number of seconds of video to pad on front and end of a clip (DEFAULT: '+str(DEFAULT_PADDING)+')')
+parser.add_argument('-m', '--model',	type=str,   default=DEFAULT_MODEL,           help='Path to the PyTorch model weights file (DEFAULT: '+DEFAULT_MODEL+')')
+parser.add_argument('-i', '--interval', type=float, default=DEFAULT_INTERVAL,        help='Number of seconds between AI sampling/detection (DEFAULT: '+str(DEFAULT_INTERVAL)+')')
+parser.add_argument('-p', '--padding',  type=float, default=DEFAULT_PADDING,         help='Number of seconds of video to pad on front and end of a clip (DEFAULT: '+str(DEFAULT_PADDING)+')')
 parser.add_argument('-r', '--report',   type=str,   default=DEFAULT_REPORT_FILENAME, help='Name of report metadata (DEFAULT: '+DEFAULT_REPORT_FILENAME+')')
-parser.add_argument('-j', '--jobs',	type=int,   default=DEFAULT_NPROCS, help='Number of concurrent (parallel) processes (DEFAULT: '+str(DEFAULT_NPROCS)+')')
-parser.add_argument('-l', '--logging',	type=str,   default=DEFAULT_LOGGING_DIR, help='The directory for log files (DEFAULT: '+str(DEFAULT_LOGGING_DIR)+')')
+parser.add_argument('-j', '--jobs',	type=int,   default=DEFAULT_NPROCS,          help='Number of concurrent (parallel) processes (DEFAULT: '+str(DEFAULT_NPROCS)+')')
+parser.add_argument('-l', '--logging',  type=str,   default=DEFAULT_LOGGING_DIR,     help='The directory for log files (DEFAULT: '+str(DEFAULT_LOGGING_DIR)+')')
 
-parser.add_argument('-t', '--tqdm',	type=str, default=DEFAULT_PROGRESSBAR, help='The mode of the progress bar.  Either \'TQDM\' or \'none\' (DEFAULT: '+str(DEFAULT_PROGRESSBAR)+')')
-
+parser.add_argument('-n', '--nobar',    action='store_true',  default=DEFAULT_NOBAR,     help='Turns off the Progress Bar during processing.  (DEFAULT: Use Progress Bar)')
 
 group = parser.add_mutually_exclusive_group()
 group.add_argument('-g', '--gpu', action='store_true',  default=True, help='Use GPU if available (DEFAULT)')
@@ -345,14 +344,18 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 		#print("PADDING INTERVALS: ", padding_intervals)
 
 		#clear_screen()
-		pbar = tqdm(total=nframes,position=pid,ncols=100,unit=" frames",leave=False,mininterval=0.5,file=sys.stdout)
-		pbar.set_description("pid=%s Processing video %d/%d: %s" %(str(pid).zfill(2),fcnt+1,len(chunk),filename))
+		if(args.nobar):
+			print("pid=%s Processing video %d/%d: %s" %(str(pid).zfill(2),fcnt+1,len(chunk),filename))
+		else:
+			pbar = tqdm(total=nframes,position=pid,ncols=100,unit=" frames",leave=False,mininterval=0.5,file=sys.stdout)
+			pbar.set_description("pid=%s Processing video %d/%d: %s" %(str(pid).zfill(2),fcnt+1,len(chunk),filename))
 
 		frame_chunk, success = get_video_chunk(invid, model, interval_frames, pu_lock)
 		if(frame_chunk["detection"] == True):
 			confidences.append(frame_chunk["confidence"])
-			
-		pbar.update(interval_frames)
+		
+		if(not args.nobar):	
+			pbar.update(interval_frames)
 
 		while(success):
 	
@@ -412,7 +415,8 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 					frame_chunk, success = get_video_chunk(invid, model, interval_frames, pu_lock)
 					if(success and frame_chunk["detection"] == True):
 						confidences.append(frame_chunk["confidence"])
-					pbar.update(interval_frames)
+					if(not args.nobar):
+						pbar.update(interval_frames)
 					if(success and frame_chunk["chunk_idx"]<=nchunks):
 						forward_buf.append(frame_chunk)
 						if(frame_chunk["detection"]):
@@ -541,7 +545,8 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 			frame_chunk, success = get_video_chunk(invid, model, interval_frames, pu_lock)
 			if(success and frame_chunk["detection"] == True):
 				confidences.append(frame_chunk["confidence"])
-			pbar.update(interval_frames)
+			if(not args.nobar):
+				pbar.update(interval_frames)
 
 
 		try:
@@ -554,7 +559,8 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 			 
 		invid.release()
 
-	pbar.close()
+	if(not args.nobar):
+		pbar.close()
 	#clear_screen()
 
 
@@ -604,15 +610,16 @@ def main():
 	****************************************************
 	''', flush=True)
 
-	print("          BEGINNING PROCESSING          ")
+	print("            BEGINNING PROCESSING          ")
 	print("*********************************************")
-	print("         INPUT_DIR: ", args.input)
-	print("        OUTPUT_DIR: ", args.output)
-	print("     MODEL WEIGHTS: ", args.model)
-	print(" SAMPLING INTERVAL: ", args.interval, "seconds")
-	print("  PADDING DURATION: ", args.padding, "seconds")
-	print("  CONCURRENT PROCS: ", args.jobs)
-	print("           USE GPU: ", usegpu)
+	print("           INPUT_DIR: ", args.input)
+	print("          OUTPUT_DIR: ", args.output)
+	print("       MODEL WEIGHTS: ", args.model)
+	print("   SAMPLING INTERVAL: ", args.interval, "seconds")
+	print("    PADDING DURATION: ", args.padding, "seconds")
+	print("    CONCURRENT PROCS: ", args.jobs)
+	print("DISABLE PROGRESS BAR: ", args.nobar)
+	print("             USE GPU: ", usegpu)
 	print("*********************************************\n\n", flush=True)
 
 	path = os.path.join(args.input, "*.mp4")
