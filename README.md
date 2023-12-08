@@ -3,36 +3,34 @@
 
 ## Usage  
 
+```
 usage: tigervid [-h] [-m MODEL] [-i INTERVAL] [-b BUFFER] [-r REPORT] [-j JOBS] [-s BATCHSIZE] [-g | -c] INPUT_DIR OUTPUT_DIR  
+```
   
 ### Efficiently analyze videos and extract clips and metadata which contain animals.  
-  
-**positional arguments:**  
-* INPUT_DIR             Path to input directory containing MP4 videos  
-* OUTPUT_DIR            Path to output directory for clips and metadatas  
-  
-**optional arguments:**  
-* -h, --help            show this help message and exit  
-* -m MODEL, --model MODEL
-  * Path to the PyTorch model weights file (DEFAULT: md_v5a.0.0.pt)
-     
-* -i INTERVAL, --interval INTERVAL
-  * Number of frames to read between sampling with AI (DEFAULT: 30)
-     
-* -b BUFFER, --buffer BUFFER
-  * Number of seconds to prepend and append to clip (DEFAULT: 5)
-    
-* -r REPORT, --report REPORT
-  * Name of report metadata (DEFAULT: report.csv)
-    
-* -j JOBS, --jobs JOBS
-  * Number of concurrent (parallel) processes (DEFAULT: 1)
-    
-* -s BATCHSIZE, --batchsize BATCHSIZE
-  * The batch size for inference (DEFAULT: 8)
-    
-* -g, --gpu             Use GPU if available (DEFAULT)  
-* -c, --cpu             Use CPU only  
+
+```
+positional arguments:
+  INPUT_DIR             Path to input directory containing MP4 videos
+  OUTPUT_DIR            Path to output directory for clips and metadatas
+
+optional arguments:
+  -h, --help            show this help message and exit
+  -m MODEL, --model MODEL
+                        Path to the PyTorch model weights file (DEFAULT: md_v5a.0.0.pt)
+  -i INTERVAL, --interval INTERVAL
+                        Number of seconds between AI sampling/detection (DEFAULT: 1.0)
+  -p PADDING, --padding PADDING
+                        Number of seconds of video to pad on front and end of a clip (DEFAULT: 5.0)
+  -r REPORT, --report REPORT
+                        Name of report metadata (DEFAULT: report.csv)
+  -j JOBS, --jobs JOBS  Number of concurrent (parallel) processes (DEFAULT: 4)
+  -l LOGGING, --logging LOGGING
+                        The directory for log files (DEFAULT: logs)
+  -n, --nobar           Turns off the Progress Bar during processing. (DEFAULT: Use Progress Bar)
+  -g, --gpu             Use GPU if available (DEFAULT)
+  -c, --cpu             Use CPU only
+```
 
 
 
@@ -45,6 +43,7 @@ python3 -m venv venv
 pip install -U pip  
 pip install torch  
 pip install pillow  
+pip install nvidia-ml-py3  
 pip install opencv-python  
 pip install imageio[ffmpeg]  
 pip install tqdm  
@@ -60,13 +59,7 @@ This tool is intended to allow the user to optimize the runtime settings to opti
 
 ## Interpreting the results
 
-The derived video clips will be named based on the original video and include some annotation on the frames which shows:  
-
-<img width="474" alt="image" src="https://github.com/sheneman/tigervid/assets/3028345/3ded327d-6a0e-4b34-9b02-acccb867bf94">  
-
-
-* The frame number within the **ORIGINAL** video file
-* The timestamp within the **ORIGINAL** video file
+The derived video clips will be named based on the original video filename and will include sequential numbering.
 
 The reports file is a CSV file containing the following columns:  
 
