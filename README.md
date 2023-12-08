@@ -1,6 +1,8 @@
 # TigerVid
 ## Scans video looking for frames which include animals, extracts video clips and a final report
 
+![image](https://github.com/sheneman/tigervid/assets/3028345/5f9e8114-8985-4f65-a76d-f9a61131f055)
+
 ## Usage  
 
 ```
