@@ -54,6 +54,16 @@ pip install requests
 
 **or** pip install -r requirements.txt  
 
+### Download model weights
+TigerVid was written with detecting animals with [MegaDetector](https://github.com/microsoft/CameraTraps/blob/main/megadetector.md) in mind, but other YOLOv5 weights should work too.  
+  
+You will need to download model weights and make them available to the script.  
+    
+MegaDetector weights can be [downloaded here](https://huggingface.co/spaces/DeepLabCut/MegaDetector_DeepLabCut/blob/1bd2a9531015d5bd6fbb141d18fd8d37bf37445a/megadet_model/md_v5a.0.0.pt).
+
+
+
+
 **A Note on GPUs**: This tool uses deep learning methods to detect animals, specifically using [PyTorch](https://pytorch.org) and [YOLOv5](https://github.com/ultralytics/yolov5). A CUDA-compatible GPU is recommended but not required. Currently TigerVid will only use one GPU, even if your system has multiple GPUs. 
 
 ## Optimizing Settings
