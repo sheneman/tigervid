@@ -18,3 +18,4 @@ slurm*
 yolov5
 yolov5/*
 out
+*.slurm
