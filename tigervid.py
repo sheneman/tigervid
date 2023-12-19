@@ -624,6 +624,7 @@ def main():
 	print("    CONCURRENT PROCS: ", args.jobs)
 	print("DISABLE PROGRESS BAR: ", args.nobar)
 	print("             USE GPU: ", usegpu)
+	print("         REPORT FILE: ", args.report)
 	print("*********************************************\n\n", flush=True)
 
 	path = os.path.join(args.input, "*.mp4")
