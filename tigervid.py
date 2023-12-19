@@ -349,7 +349,7 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 
 		#clear_screen()
 		if(args.nobar):
-			print("pid=%s Processing video %d/%d: %s" %(str(pid).zfill(2),fcnt+1,len(chunk),filename))
+			print("pid=%s Processing video %d/%d: %s" %(str(pid).zfill(2),fcnt+1,len(chunk),filename), flush=True)
 		else:
 			pbar = tqdm(total=nframes,position=pid,ncols=100,unit=" frames",leave=False,mininterval=0.5,file=sys.stdout)
 			pbar.set_description("pid=%s Processing video %d/%d: %s" %(str(pid).zfill(2),fcnt+1,len(chunk),filename))
