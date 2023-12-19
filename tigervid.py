@@ -63,6 +63,10 @@ group.add_argument('-c', '--cpu', action='store_true', default=False, help='Use 
 args = parser.parse_args()
 
 
+
+
+args.cpu
+
 if(not os.path.isfile(args.model)):
 	print("Error:  Could not find model weights '%s'" %args.model, flush=True)
 	parser.print_usage()
@@ -574,7 +578,7 @@ def main():
 
 	all_start_time = time.time()
 
-	if(args.gpu == True):
+	if(usegpu == True):
 		gpu_info = get_gpu_info()
 		print("Detected %d CUDA GPUs" %(gpu_info[0]))
 		for g in range(1,len(gpu_info)):
