@@ -15,16 +15,19 @@
 
 import os, sys, time, pathlib
 import argparse
-from multiprocessing import Process, current_process, freeze_support, Lock, RLock, Manager
+#from multiprocessing import Process, current_process, freeze_support, Lock, RLock, Manager
+from torch.multiprocessing import freeze_support, Lock,  Manager, Pool
 import cv2
 import math
 import nvidia_smi
 import logging
+import resource
 import random
 import torch
 import glob
 import numpy as np
 import imageio
+import signal
 from tqdm import tqdm	
 
 
@@ -38,6 +41,7 @@ DEFAULT_PADDING		 = 5.0   # number of seconds of video to include before first d
 DEFAULT_REPORT_FILENAME  = "report.csv"
 DEFAULT_NPROCS           = 4
 DEFAULT_NOBAR		 = False
+DEFAULT_MAX_FD		 = 16384
 
 YOLODIR = "yolov5"
 
@@ -135,9 +139,25 @@ def report(pid, report_list):
 		report_file.write(s)	
 		report_file.flush()
 		report_file.close()
+
 	except:
 		print("Warning:  Could not open report file %s for writing in report()" %(args.report), flush=True)
 
+	return(clip_path)
+
+
+
+
+def signal_handler(signum, frame):
+	print(f"Received signal {signum}!", flush=True)
+
+	if(signum == 15):
+		print(f"Intercepted SIGTERM.  Ignoring...", flush=True)
+		time.sleep(1)
+		return
+
+	else:
+		exit(0)
 
 
 
@@ -210,11 +230,11 @@ def chunks(filenames, n):
 #     result as dict with keys:  {frame_buffer, detection (boolean), confidence score}
 #     success (True/False) 
 #
-def get_video_chunk(invid, model, interval_sz, pu_lock):
+def get_video_chunk(pid, invid, model, interval_sz, pu_lock):
 
 	global chunk_idx
 
-	#print("Getting chunk: %d" %chunk_idx)
+	print("pid=%s: Getting chunk: %d" %(str(pid).zfill(2),chunk_idx))
 
 	res = {}
 	res["chunk_idx"] = chunk_idx
@@ -225,15 +245,19 @@ def get_video_chunk(invid, model, interval_sz, pu_lock):
 		if(success):
 			buf.append(image)
 		else:
-			#print("Error:  Could not read frame chunk: %d" %chunk_idx)
+			print("Error:  Could not read frame chunk: %d" %chunk_idx)
 			chunk_idx += 1
 			return(None, False)
 			
+	print("pid=%s: got video chunk %d" %(str(pid).zfill(2),chunk_idx), flush=True)
 
 	inference_frame = cv2.resize(image, (640,640))
-	with pu_lock:
+	#with pu_lock:
+	if(True):
 		try:
+			print("pid=%s: starting inference on chunk %d..." %(str(pid).zfill(2),chunk_idx), flush=True)
 			results = model(inference_frame).pandas().xyxy[0]
+			print("pid=%s: inference done on chunk %d" %(str(pid).zfill(2),chunk_idx), flush=True)
 		except:
 			print("Error: Could not run model inference on frame from chunk index: %d" %chunk_idx)
 			sys.exit(-1)
@@ -274,7 +298,10 @@ def write_clip(clip, frame_chunk):
 	most_recent_written_chunk = frame_chunk["chunk_idx"]
 	
 	for frame in frame_chunk["buffer"]:
-		clip.write(frame)
+		try:
+			clip.write(frame)
+		except:
+			print("Failed to write to clip in write_clip().  Exception calling clip.write()", flush=True)
 		
 
 
@@ -288,22 +315,28 @@ def get_debug_buffer(frame_chunk):
 
 
 
-
-def process_chunk(pid, chunk, pu_lock, report_lock):
+def process_chunk(pid_chunk_pair, pu_lock, report_lock):
 
 	global args
 	global model
 	global chunk_idx
 	global most_recent_written_chunk
 
+	pid, chunk = pid_chunk_pair
+
+	resource.setrlimit(resource.RLIMIT_NOFILE, (DEFAULT_MAX_FD, DEFAULT_MAX_FD))
+
+	signal.signal(signal.SIGINT, signal_handler)
+	signal.signal(signal.SIGTERM, signal_handler)
+
 	# lets pace ourselves on startup to help avoid general race conditions
 	time.sleep(pid*1)
 
 	for fcnt, filename in enumerate(chunk):
 
-
 		while(True):
 			try:
+				print("pid=%s:, imageio() start" %(str(pid).zfill(2)), flush=True)
 				v=imageio.get_reader(filename,  'ffmpeg')
 				nframes  = v.count_frames()
 				metadata = v.get_meta_data()
@@ -312,6 +345,8 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 				fps = metadata['fps']
 				duration = metadata['duration']
 				size = metadata['size']
+				
+				print("pid=%s: imageio() end" %(str(pid).zfill(2)), flush=True)
 	
 				break
 			except:
@@ -321,7 +356,9 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 		(width,height) = size
 
 		try:
+			print("pid=%s. open VideoCapture()" %(str(pid).zfill(2)), flush=True)
 			invid = cv2.VideoCapture(filename)
+			print("pid=%s. VideoCapture() returned" %(str(pid).zfill(2)), flush=True)
 		except:
 			print("Could not read video file: ", filename, " skipping...", flush=True)
 			continue
@@ -347,14 +384,16 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 		#print("FRAMES PER INTERVAL: ", interval_frames)	
 		#print("PADDING INTERVALS: ", padding_intervals)
 
+		latest_reported_clip_path = ""
+
 		#clear_screen()
 		if(args.nobar):
-			print("pid=%s Processing video %d/%d: %s" %(str(pid).zfill(2),fcnt+1,len(chunk),filename), flush=True)
+			print("pid=%s: Processing video %d/%d: %s" %(str(pid).zfill(2),fcnt+1,len(chunk),filename), flush=True)
 		else:
 			pbar = tqdm(total=nframes,position=pid,ncols=100,unit=" frames",leave=False,mininterval=0.5,file=sys.stdout)
-			pbar.set_description("pid=%s Processing video %d/%d: %s" %(str(pid).zfill(2),fcnt+1,len(chunk),filename))
+			pbar.set_description("pid=%s: Processing video %d/%d: %s" %(str(pid).zfill(2),fcnt+1,len(chunk),filename))
 
-		frame_chunk, success = get_video_chunk(invid, model, interval_frames, pu_lock)
+		frame_chunk, success = get_video_chunk(pid, invid, model, interval_frames, pu_lock)
 		if(frame_chunk["detection"] == True):
 			confidences.append(frame_chunk["confidence"])
 		
@@ -365,7 +404,7 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 	
 			#print("CHUNK_IDX: %d/%d" %(chunk_idx, nchunks))
 			if(chunk_idx > nchunks):
-				#print("OUT OF CHUNKS TO READ.  BAILING")
+				print("PID=%d, OUT OF CHUNKS TO READ.  BAILING" %pid, flush=True)
 				return
 
 			# state transition from SCANNING blanks to DETECTION
@@ -384,7 +423,12 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 				clip_name = os.path.splitext(fn)[0] + "_{:03d}".format(clip_number) + ".mp4"
 				clip_path = os.path.join(args.output, clip_name)
 				fourcc = cv2.VideoWriter_fourcc(*'mp4v')	
-				clip = cv2.VideoWriter(clip_path, fourcc, fps, (width,height))
+				try:
+					clip = cv2.VideoWriter(clip_path, fourcc, fps, (width,height))
+				except:
+					print("Could not create a clip via cv2.VideoWriter!", flush=True)
+					continue
+
 				clip_number += 1
 			
 				# track the first frame of the clip for export to metadata report
@@ -416,7 +460,7 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 				forward_buf.append(frame_chunk)
 				forward_detection_flag = frame_chunk["detection"]
 				for i in range(0,2*padding_intervals+1):   #SHENEMAN
-					frame_chunk, success = get_video_chunk(invid, model, interval_frames, pu_lock)
+					frame_chunk, success = get_video_chunk(pid, invid, model, interval_frames, pu_lock)
 					if(success and frame_chunk["detection"] == True):
 						confidences.append(frame_chunk["confidence"])
 					if(not args.nobar):
@@ -461,7 +505,8 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 					clip.release()	
 					clip_end_frame = (most_recent_written_chunk * interval_frames) + interval_frames
 					with report_lock:
-						report(pid, [filename, clip_path, fps, clip_start_frame, clip_end_frame, confidences])
+						if(clip_path != latest_reported_clip_path):  # make sure we don't record the same clip 2x
+							latest_reported_clip_path = report(pid, [filename, clip_path, fps, clip_start_frame, clip_end_frame, confidences])
 					#print("***WROTE CLIP TO DISK***")
 
 					# some debugging of buffers
@@ -546,7 +591,7 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 					buffer_chunks.pop(0)
     
 		
-			frame_chunk, success = get_video_chunk(invid, model, interval_frames, pu_lock)
+			frame_chunk, success = get_video_chunk(pid, invid, model, interval_frames, pu_lock)
 			if(success and frame_chunk["detection"] == True):
 				confidences.append(frame_chunk["confidence"])
 			if(not args.nobar):
@@ -557,7 +602,8 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 			clip.release()
 			clip_end_frame = (most_recent_written_chunk * interval_frames) + interval_frames
 			with report_lock:
-				report(pid, [filename, clip_path, fps, clip_start_frame, clip_end_frame, confidences])
+				if(clip_path != latest_reported_clip_path):  # make sure we don't record the same clip 2x
+					latest_reported_clip_path = report(pid, [filename, clip_path, fps, clip_start_frame, clip_end_frame, confidences])
 		except:
 			break
 			 
@@ -627,6 +673,9 @@ def main():
 	print("         REPORT FILE: ", args.report)
 	print("*********************************************\n\n", flush=True)
 
+	signal.signal(signal.SIGINT, signal_handler)
+	signal.signal(signal.SIGTERM, signal_handler)
+
 	path = os.path.join(args.input, "*.mp4")
 	files = glob.glob(path)
 	random.shuffle(files)
@@ -640,39 +689,58 @@ def main():
 	if(usegpu==True):
 		torch.cuda.empty_cache()
 
-	processes = []
-	for pid,chunk in enumerate(ch):
-		p = Process(target = process_chunk, args=(pid, chunk, pu_lock, report_lock))
-		processes.append(p)
-		p.start()
+	with Pool(processes=args.jobs) as pool:
+		pid_chunk_pairs = list(enumerate(ch))
+		pool.starmap(process_chunk, [(pair, pu_lock, report_lock) for pair in pid_chunk_pairs])
+
+#	for pid,chunk in enumerate(ch):
+#		p = Process(target=process_chunk, args=(pid, chunk, pu_lock, report_lock))
+#		processes.append(p)
+#		p.start()
+#
+#	#for p in processes:
+#	#	p.join() 
+#
+#	while(True):
+#		for p in processes:
+#			if(not p.is_alive()):
+#				print("PID %d IS DEAD" %(p.pid))
+#			time.sleep(0.25)
+#
+#	while any(p.is_alive() for p in processes):
+#		for p in processes:
+#			if p.exitcode is not None and p.exitcode != 0:
+#				print(f"Terminating due to failure in process {p.pid}")
+#
+#				for p in processes:
+#					p.terminate()
+#
+#				time.sleep(2)
+#				clear_screen()
+#				reset_screen()
+#
+#				print("\n")
+#				print("*****************************************************************************")
+#				print("SOMETHING WENT HORRIBLY WRONG:")
+#				print("Failure to run model within system resources (e.g. GPU RAM).")
+#				print("Please reduce the number of concurrent jobs (i.e., --jobs <n>) and try again!")
+#				print("*****************************************************************************")
+#				print("\n\n")
+#
+#				return
+#
+#			if(not p.is_alive):
+#				print("Process is DEAD.  pid=", p.pid)
+#
+#		time.sleep(0.5)  # Check periodically
+#
 
 
-	while any(p.is_alive() for p in processes):
-		for p in processes:
-			if p.exitcode is not None and p.exitcode != 0:
-				print(f"Terminating due to failure in process {p.pid}")
-
-				for p in processes:
-					p.terminate()
-
-				time.sleep(2)
-				clear_screen()
-				reset_screen()
-
-				print("\n")
-				print("*****************************************************************************")
-				print("SOMETHING WENT HORRIBLY WRONG:")
-				print("Failure to run model within system resources (e.g. GPU RAM).")
-				print("Please reduce the number of concurrent jobs (i.e., --jobs <n>) and try again!")
-				print("*****************************************************************************")
-				print("\n\n")
-
-				return
-
-		time.sleep(0.5)  # Check periodically
-
-	clear_screen()
-	reset_screen()
+	if(not args.nobar):	
+		clear_screen()
+		reset_screen()
+	else:
+		print("\n")
 
 	print("Total time to process %d videos: %.02f seconds" %(len(files), time.time()-all_start_time))
 	print("Report file saved to %s" %args.report)

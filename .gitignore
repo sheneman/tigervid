@@ -20,3 +20,9 @@ yolov5/*
 out
 *.slurm
 reports/*
+*.out
+OLDINPUTS/*
+logs/*
+REALINPUTS/*
+*.slurm
+
