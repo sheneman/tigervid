@@ -15,8 +15,9 @@
 
 import os, sys, time, pathlib
 import argparse
-#from multiprocessing import Process, current_process, freeze_support, Lock, RLock, Manager
-from torch.multiprocessing import freeze_support, Lock,  Manager, Pool
+from multiprocessing import Process, freeze_support
+#from torch.multiprocessing import freeze_support, Lock,  Manager, Pool
+import queue
 import cv2
 import math
 import nvidia_smi
@@ -39,7 +40,7 @@ DEFAULT_MODEL            = 'md_v5a.0.0.pt'
 DEFAULT_INTERVAL         = 1.0   # number of seconds between samples
 DEFAULT_PADDING		 = 5.0   # number of seconds of video to include before first detection and after last detection in a clip
 DEFAULT_REPORT_FILENAME  = "report.csv"
-DEFAULT_NPROCS           = 4
+DEFAULT_WORKERS          = 4
 DEFAULT_NOBAR		 = False
 DEFAULT_MAX_FD		 = 16384
 
@@ -49,13 +50,13 @@ YOLODIR = "yolov5"
 parser = argparse.ArgumentParser(prog='tigervid', description='Analyze videos and extract clips and metadata which contain animals.')
 
 parser.add_argument('input',  metavar='INPUT_DIR',  default=DEFAULT_INPUT_DIR,  help='Path to input directory containing MP4 videos')
-parser.add_argument('output', metavar='OUTPUT_DIR', default=DEFAULT_OUTPUT_DIR, help='Path to output directory for clips and metadatas')
+parser.add_argument('output', metavar='OUTPUT_DIR', default=DEFAULT_OUTPUT_DIR, help='Path to output directory for clips and metadata')
 
 parser.add_argument('-m', '--model',	type=str,   default=DEFAULT_MODEL,           help='Path to the PyTorch model weights file (DEFAULT: '+DEFAULT_MODEL+')')
 parser.add_argument('-i', '--interval', type=float, default=DEFAULT_INTERVAL,        help='Number of seconds between AI sampling/detection (DEFAULT: '+str(DEFAULT_INTERVAL)+')')
 parser.add_argument('-p', '--padding',  type=float, default=DEFAULT_PADDING,         help='Number of seconds of video to pad on front and end of a clip (DEFAULT: '+str(DEFAULT_PADDING)+')')
 parser.add_argument('-r', '--report',   type=str,   default=DEFAULT_REPORT_FILENAME, help='Name of report metadata (DEFAULT: '+DEFAULT_REPORT_FILENAME+')')
-parser.add_argument('-j', '--jobs',	type=int,   default=DEFAULT_NPROCS,          help='Number of concurrent (parallel) processes (DEFAULT: '+str(DEFAULT_NPROCS)+')')
+parser.add_argument('-w', '--workers',	type=int,   default=DEFAULT_WORKERS,         help='Number of concurrent (parallel) processes (DEFAULT: '+str(DEFAULT_WORKERS)+')')
 parser.add_argument('-l', '--logging',  type=str,   default=DEFAULT_LOGGING_DIR,     help='The directory for log files (DEFAULT: '+str(DEFAULT_LOGGING_DIR)+')')
 
 parser.add_argument('-n', '--nobar',    action='store_true',  default=DEFAULT_NOBAR,     help='Turns off the Progress Bar during processing.  (DEFAULT: Use Progress Bar)')
@@ -68,8 +69,6 @@ args = parser.parse_args()
 
 
 
-
-args.cpu
 
 if(not os.path.isfile(args.model)):
 	print("Error:  Could not find model weights '%s'" %args.model, flush=True)
@@ -89,37 +88,6 @@ if(not os.path.exists(args.logging)):
 	print("Could not find logging directory path '%s'...Creating Directory!" %args.logging, flush=True)
 	os.makedirs(args.logging)
 
-if(args.cpu==True):
-	device = "cpu"
-	torch.device(device)
-	if __name__ == '__main__':
-	    print("Using CPU", flush=True)
-	usegpu = False
-else:
-	if(torch.cuda.is_available()):
-		device = "cuda"
-		usegpu = True
-		if __name__ == '__main__':
-		    print("Using GPU", flush=True)
-	else:
-		device = "cpu"
-		usegpu = False
-
-torch.device(device)
-
-if __name__ != '__main__':
-	logging.getLogger('torch.hub').setLevel(logging.ERROR)
-	    
-	try:
-		if(os.path.exists(YOLODIR)):
-			model = torch.hub.load(YOLODIR, 'custom', path=args.model, _verbose=False, verbose=False, source='local')
-		else:
-			model = torch.hub.load('ultralytics/yolov5', 'custom', path=args.model, _verbose=False, verbose=False)
-
-		model.to(device)
-	except:
-		print("COULD NOT DEPLOY MODEL TO DEVICE (GPU, etc.)")
-		sys.exit(-1)
 
 
 
@@ -179,7 +147,6 @@ def human_size(bytes, units=[' bytes','KB','MB','GB','TB', 'PB', 'EB']):
 	return str(bytes) + units[0] if bytes < 1024 else human_size(bytes>>10, units[1:])
 
 def get_gpu_info():
-	nvidia_smi.nvmlInit()
 
 	deviceCount = nvidia_smi.nvmlDeviceGetCount()
 	gpu_info = []
@@ -223,6 +190,68 @@ def chunks(filenames, n):
 
 
 
+def inference_worker(frame_queue):
+
+	#torch.multiprocessing.set_start_method('spawn')
+
+	if(args.cpu==True):
+		device = "cpu"
+		torch.device(device)
+		print("Using CPU", flush=True)
+		usegpu = False
+	else:
+		if(torch.cuda.is_available()):
+			device = "cuda"
+			usegpu = True
+			print("Using GPU", flush=True)
+		else:
+			device = "cpu"
+			usegpu = False
+
+	torch.device(device)
+
+	if(usegpu == True):
+		gpu_info = get_gpu_info()
+		print("Detected %d CUDA GPUs" %(gpu_info[0]))
+		for g in range(1,len(gpu_info)):
+			mem_total, mem_used, mem_free = gpu_info[g]
+			print("GPU:{}, Memory : ({:.2f}% free): {}(total), {} (free), {} (used)".format(g-1, 100*mem_free/mem_total, human_size(mem_total), human_size(mem_free), human_size(mem_used)))
+
+	
+	logging.getLogger('torch.hub').setLevel(logging.ERROR)
+	    
+	try:
+		if(os.path.exists(YOLODIR)):
+			model = torch.hub.load(YOLODIR, 'custom', path=args.model, _verbose=False, verbose=False, source='local')
+		else:
+			model = torch.hub.load('ultralytics/yolov5', 'custom', path=args.model, _verbose=False, verbose=False)
+
+		model.to(device)
+	except:
+		print("COULD NOT DEPLOY MODEL TO DEVICE (GPU, etc.)")
+		sys.exit(-1)
+
+
+
+	while True:
+		try:
+			frame = frame_queue.get(timeout=90)  # adjust timeout as needed
+			if frame is None:  # using None as the signal to stop
+				break
+
+			# Perform inference on the frame
+			result = your_ai_library.infer(frame)
+
+			# Process the result as needed
+
+		except queue.Empty:
+			continue
+	
+	
+
+
+
+
 
 #
 # retrieves chunk of video frames of size interval_sz
@@ -252,7 +281,7 @@ def get_video_chunk(pid, invid, model, interval_sz, pu_lock):
 	print("pid=%s: got video chunk %d" %(str(pid).zfill(2),chunk_idx), flush=True)
 
 	inference_frame = cv2.resize(image, (640,640))
-	#with pu_lock:
+	
 	if(True):
 		try:
 			print("pid=%s: starting inference on chunk %d..." %(str(pid).zfill(2),chunk_idx), flush=True)
@@ -624,13 +653,6 @@ def main():
 
 	all_start_time = time.time()
 
-	if(usegpu == True):
-		gpu_info = get_gpu_info()
-		print("Detected %d CUDA GPUs" %(gpu_info[0]))
-		for g in range(1,len(gpu_info)):
-			mem_total, mem_used, mem_free = gpu_info[g]
-			print("GPU:{}, Memory : ({:.2f}% free): {}(total), {} (free), {} (used)".format(g-1, 100*mem_free/mem_total, human_size(mem_total), human_size(mem_free), human_size(mem_used)))
-
 	freeze_support()  # For Windows support - multiprocessing with tqdm
 
 	try:
@@ -667,73 +689,43 @@ def main():
 	print("       MODEL WEIGHTS: ", args.model)
 	print("   SAMPLING INTERVAL: ", args.interval, "seconds")
 	print("    PADDING DURATION: ", args.padding, "seconds")
-	print("    CONCURRENT PROCS: ", args.jobs)
+	print("  CONCURRENT WORKERS: ", args.workers)
 	print("DISABLE PROGRESS BAR: ", args.nobar)
 	print("             USE GPU: ", usegpu)
 	print("         REPORT FILE: ", args.report)
 	print("*********************************************\n\n", flush=True)
 
-	signal.signal(signal.SIGINT, signal_handler)
+	signal.signal(signal.SIGINT,  signal_handler)
 	signal.signal(signal.SIGTERM, signal_handler)
 
 	path = os.path.join(args.input, "*.mp4")
 	files = glob.glob(path)
 	random.shuffle(files)
-	ch = chunks(files,args.jobs)
+	chs = chunks(files,args.workers)
 
-	manager = Manager()
+	frame_queue  = multiprocessing.Queue(maxsize=1024)
+	report_queue = multiprocessing.Queue(maxsize=args.workers*2)
 
-	pu_lock     = manager.Lock()
-	report_lock = manager.Lock()
+	# instantiate the AI inference process
+	inference_process = multiprocessing.Process(target=inference_worker, args=(frame_queue,))
+	inference_process.start()
 
-	if(usegpu==True):
-		torch.cuda.empty_cache()
+	# instantiate the report process
+	reporting_process = multiprocessing.Process(target=reporting_worker, args=(report_queue,))
+	reporting_process.start()
 
-	with Pool(processes=args.jobs) as pool:
-		pid_chunk_pairs = list(enumerate(ch))
-		pool.starmap(process_chunk, [(pair, pu_lock, report_lock) for pair in pid_chunk_pairs])
+	# instantiate streaming workers
+	streaming_workers = []
+	for ch in chs:
+		p = multiprocessing.Process(target=streaming_worker, args=(frame_queue, ch))
+		p.start()
+		streaming_workers.append(p)	
 
-#	for pid,chunk in enumerate(ch):
-#		p = Process(target=process_chunk, args=(pid, chunk, pu_lock, report_lock))
-#		processes.append(p)
-#		p.start()
-#
-#	#for p in processes:
-#	#	p.join() 
-#
-#	while(True):
-#		for p in processes:
-#			if(not p.is_alive()):
-#				print("PID %d IS DEAD" %(p.pid))
-#			time.sleep(0.25)
-#
-#	while any(p.is_alive() for p in processes):
-#		for p in processes:
-#			if p.exitcode is not None and p.exitcode != 0:
-#				print(f"Terminating due to failure in process {p.pid}")
-#
-#				for p in processes:
-#					p.terminate()
-#
-#				time.sleep(2)
-#				clear_screen()
-#				reset_screen()
-#
-#				print("\n")
-#				print("*****************************************************************************")
-#				print("SOMETHING WENT HORRIBLY WRONG:")
-#				print("Failure to run model within system resources (e.g. GPU RAM).")
-#				print("Please reduce the number of concurrent jobs (i.e., --jobs <n>) and try again!")
-#				print("*****************************************************************************")
-#				print("\n\n")
-#
-#				return
-#
-#			if(not p.is_alive):
-#				print("Process is DEAD.  pid=", p.pid)
-#
-#		time.sleep(0.5)  # Check periodically
-#
+	# Wait for all processes to complete
+	for p in streaming_workers:
+		p.join()
+	inference_process.join()
+	reporting_process.join()
 
 
 	if(not args.nobar):	
@@ -749,7 +741,6 @@ def main():
 
 if __name__ == '__main__':
 
-	torch.multiprocessing.set_start_method('spawn')
 
 	main()
 
