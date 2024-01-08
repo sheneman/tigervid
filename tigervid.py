@@ -15,9 +15,9 @@
 
 import os, sys, time, pathlib
 import argparse
-from multiprocessing import Process, freeze_support
+from multiprocessing import Process, Queue, freeze_support
 #from torch.multiprocessing import freeze_support, Lock,  Manager, Pool
-import queue
+#import queue
 import cv2
 import math
 import nvidia_smi
@@ -67,7 +67,8 @@ group.add_argument('-c', '--cpu', action='store_true', default=False, help='Use 
 
 args = parser.parse_args()
 
-
+if(args.cpu == True):
+	args.gpu = False;
 
 
 if(not os.path.isfile(args.model)):
@@ -91,27 +92,42 @@ if(not os.path.exists(args.logging)):
 
 
 
-def report(pid, report_list):
-
+def report(pid, results_queue, report_list):
 
 	filename,clip_path,fps,start_frame,end_frame,confidences = report_list
+	results_queue.put(report_list)
 
-	min_conf  = min(confidences)
-	max_conf  = max(confidences)
-	mean_conf = 0 if len(confidences) == 0 else sum(confidences)/len(confidences)
+	return(filename)
 
-	s = "\"%s\", \"%s\", %d, %.02f, %d, %.02f, %d, %.02f, %.02f, %.02f, %.02f\n" %(filename, clip_path, start_frame, start_frame/fps, end_frame, end_frame/fps, end_frame-start_frame, (end_frame-start_frame)/fps, min_conf, max_conf, mean_conf)
 
-	try:
-		report_file = open(args.report, "a")
-		report_file.write(s)	
-		report_file.flush()
-		report_file.close()
 
-	except:
-		print("Warning:  Could not open report file %s for writing in report()" %(args.report), flush=True)
+def reporting_worker(reporting_queue):
+	
+	while True:
+		report_list = reporting_queue.get()
+	
+		if(report_list is None):
+			time.sleep(1)
 
-	return(clip_path)
+		else:
+
+			filename,clip_path,fps,start_frame,end_frame,confidences = report_list
+
+			min_conf  = min(confidences)
+			max_conf  = max(confidences)
+			mean_conf = 0 if len(confidences) == 0 else sum(confidences)/len(confidences)
+
+			s = "\"%s\", \"%s\", %d, %.02f, %d, %.02f, %d, %.02f, %.02f, %.02f, %.02f\n" %(filename, clip_path, start_frame, start_frame/fps, end_frame, end_frame/fps, end_frame-start_frame, (end_frame-start_frame)/fps, min_conf, max_conf, mean_conf)
+
+			try:
+				report_file = open(args.report, "a")
+				report_file.write(s)	
+				report_file.flush()
+				report_file.close()
+
+			except:
+				print("Warning:  Could not open report file %s for writing in reporting_worker()" %(args.report), flush=True)
+
 
 
 
@@ -190,7 +206,7 @@ def chunks(filenames, n):
 
 
 
-def inference_worker(frame_queue):
+def inference_worker(frame_queues, response_queues):
 
 	#torch.multiprocessing.set_start_method('spawn')
 
@@ -233,23 +249,34 @@ def inference_worker(frame_queue):
 
 
 
+	# iterate over all frame queues looking for frames to process
 	while True:
-		try:
-			frame = frame_queue.get(timeout=90)  # adjust timeout as needed
-			if frame is None:  # using None as the signal to stop
-				break
+		for pid, frame_queue in enumerate(frame_queues):
+			try:
+				frame = frame_queue.get()  # add and adjust timeout as needed
+				if frame is None:  # using None as the signal to stop
+					break
 
-			# Perform inference on the frame
-			result = your_ai_library.infer(frame)
+				# Perform inference on the frame
+				results = model(inference_frame).pandas().xyxy[0]
 
-			# Process the result as needed
+				# Process the result 
+				if(results.shape[0]):
+					detection = True
+					confidence = results["confidence"].mean()
+				else:
+					detection = False
+					confidence = None
+			    
+				#print("----> Detection is [%s]" %(str(detection)))
+	
+				response_queue.put((detection,confidence))
 
-		except queue.Empty:
-			continue
+
+			except queue.Empty:
+				continue
 	
 	
-
-
 
 
 
@@ -259,7 +286,7 @@ def inference_worker(frame_queue):
 #     result as dict with keys:  {frame_buffer, detection (boolean), confidence score}
 #     success (True/False) 
 #
-def get_video_chunk(pid, invid, model, interval_sz, pu_lock):
+def get_video_chunk(pid, frame_queue, response_queue, invid, model, interval_sz):
 
 	global chunk_idx
 
@@ -282,26 +309,26 @@ def get_video_chunk(pid, invid, model, interval_sz, pu_lock):
 
 	inference_frame = cv2.resize(image, (640,640))
 	
-	if(True):
-		try:
-			print("pid=%s: starting inference on chunk %d..." %(str(pid).zfill(2),chunk_idx), flush=True)
-			results = model(inference_frame).pandas().xyxy[0]
-			print("pid=%s: inference done on chunk %d" %(str(pid).zfill(2),chunk_idx), flush=True)
-		except:
-			print("Error: Could not run model inference on frame from chunk index: %d" %chunk_idx)
-			sys.exit(-1)
-			#chunk_idx += 1
-			#return(None, False)
+	try:
+		# put the frame on the inference queue for this worker
+		frame_queue.put((frame, chunk_idx))
+
+		print("pid=%s: inference queued on chunk %d..." %(str(pid).zfill(2),chunk_idx), flush=True)
+
+	except:
+		print("Error: Could not run model inference on frame from chunk index: %d" %chunk_idx)
+		sys.exit(-1)
 
 
-	if(results.shape[0]):
-		detection = True
-		confidence = results["confidence"].mean()
-	else:
-		detection = False
-		confidence = None
-    
-	#print("----> Detection is [%s] for chunk index: %d" %(str(detection), chunk_idx))
+	# synchronously block on getting an inference response from the inference process
+	print("Waiting for data...")
+	try:
+		data = response_queue.get(timeout=128) 
+		print("Received:", data)
+	except queue.Empty:
+		print("No data received within timeout period.")
+	
+	detection, confidence = data
 
 	res["buffer"]	  = buf
 	res["detection"]  = detection
@@ -344,19 +371,18 @@ def get_debug_buffer(frame_chunk):
 
 
 
-def process_chunk(pid_chunk_pair, pu_lock, report_lock):
+def streaming_worker(pid, chunk, frame_queue, response_queue, reporting_queue):
 
 	global args
 	global model
 	global chunk_idx
 	global most_recent_written_chunk
 
-	pid, chunk = pid_chunk_pair
 
 	resource.setrlimit(resource.RLIMIT_NOFILE, (DEFAULT_MAX_FD, DEFAULT_MAX_FD))
 
-	signal.signal(signal.SIGINT, signal_handler)
-	signal.signal(signal.SIGTERM, signal_handler)
+	#signal.signal(signal.SIGINT, signal_handler)
+	#signal.signal(signal.SIGTERM, signal_handler)
 
 	# lets pace ourselves on startup to help avoid general race conditions
 	time.sleep(pid*1)
@@ -422,7 +448,7 @@ def process_chunk(pid_chunk_pair, pu_lock, report_lock):
 			pbar = tqdm(total=nframes,position=pid,ncols=100,unit=" frames",leave=False,mininterval=0.5,file=sys.stdout)
 			pbar.set_description("pid=%s: Processing video %d/%d: %s" %(str(pid).zfill(2),fcnt+1,len(chunk),filename))
 
-		frame_chunk, success = get_video_chunk(pid, invid, model, interval_frames, pu_lock)
+		frame_chunk, success = get_video_chunk(pid, frame_queue, response_queue, invid, model, interval_frames)
 		if(frame_chunk["detection"] == True):
 			confidences.append(frame_chunk["confidence"])
 		
@@ -489,7 +515,7 @@ def process_chunk(pid_chunk_pair, pu_lock, report_lock):
 				forward_buf.append(frame_chunk)
 				forward_detection_flag = frame_chunk["detection"]
 				for i in range(0,2*padding_intervals+1):   #SHENEMAN
-					frame_chunk, success = get_video_chunk(pid, invid, model, interval_frames, pu_lock)
+					frame_chunk, success = get_video_chunk(pid, frame_queue, response_queue, invid, model, interval_frames)
 					if(success and frame_chunk["detection"] == True):
 						confidences.append(frame_chunk["confidence"])
 					if(not args.nobar):
@@ -535,7 +561,7 @@ def process_chunk(pid_chunk_pair, pu_lock, report_lock):
 					clip_end_frame = (most_recent_written_chunk * interval_frames) + interval_frames
 					with report_lock:
 						if(clip_path != latest_reported_clip_path):  # make sure we don't record the same clip 2x
-							latest_reported_clip_path = report(pid, [filename, clip_path, fps, clip_start_frame, clip_end_frame, confidences])
+							latest_reported_clip_path = report(pid, reporting_queue, [filename, clip_path, fps, clip_start_frame, clip_end_frame, confidences])
 					#print("***WROTE CLIP TO DISK***")
 
 					# some debugging of buffers
@@ -620,7 +646,7 @@ def process_chunk(pid_chunk_pair, pu_lock, report_lock):
 					buffer_chunks.pop(0)
     
 		
-			frame_chunk, success = get_video_chunk(pid, invid, model, interval_frames, pu_lock)
+			frame_chunk, success = get_video_chunk(pid, frame_queue, response_queue, invid, model, interval_frames)
 			if(success and frame_chunk["detection"] == True):
 				confidences.append(frame_chunk["confidence"])
 			if(not args.nobar):
@@ -632,7 +658,7 @@ def process_chunk(pid_chunk_pair, pu_lock, report_lock):
 			clip_end_frame = (most_recent_written_chunk * interval_frames) + interval_frames
 			with report_lock:
 				if(clip_path != latest_reported_clip_path):  # make sure we don't record the same clip 2x
-					latest_reported_clip_path = report(pid, [filename, clip_path, fps, clip_start_frame, clip_end_frame, confidences])
+					latest_reported_clip_path = report(pid, reporting_queue, [filename, clip_path, fps, clip_start_frame, clip_end_frame, confidences])
 		except:
 			break
 			 
@@ -691,7 +717,7 @@ def main():
 	print("    PADDING DURATION: ", args.padding, "seconds")
 	print("  CONCURRENT WORKERS: ", args.workers)
 	print("DISABLE PROGRESS BAR: ", args.nobar)
-	print("             USE GPU: ", usegpu)
+	print("             USE GPU: ", args.gpu)
 	print("         REPORT FILE: ", args.report)
 	print("*********************************************\n\n", flush=True)
 
@@ -703,23 +729,32 @@ def main():
 	random.shuffle(files)
 	chs = chunks(files,args.workers)
 
-	frame_queue  = multiprocessing.Queue(maxsize=1024)
-	report_queue = multiprocessing.Queue(maxsize=args.workers*2)
-
-	# instantiate the AI inference process
-	inference_process = multiprocessing.Process(target=inference_worker, args=(frame_queue,))
-	inference_process.start()
-
 	# instantiate the report process
-	reporting_process = multiprocessing.Process(target=reporting_worker, args=(report_queue,))
+	reporting_queue   = Queue(maxsize=args.workers*2)
+	reporting_process = Process(target=reporting_worker, args=(reporting_queue,))
 	reporting_process.start()
 
 	# instantiate streaming workers
 	streaming_workers = []
-	for ch in chs:
-		p = multiprocessing.Process(target=streaming_worker, args=(frame_queue, ch))
+	frame_queues    = []
+	response_queues = []
+	for pid,ch in enumerate(chs):
+		frame_queue    = Queue(maxsize=128)
+		response_queue = Queue(maxsize=128)
+
+		p = Process(target=streaming_worker, args=(pid, ch, frame_queue, response_queue, reporting_queue))
+
 		p.start()
-		streaming_workers.append(p)	
+		streaming_workers.append(p)
+		
+		frame_queues.append(frame_queue)
+		response_queues.append(response_queue)	
+
+	# instantiate the AI inference process
+	inference_process = Process(target=inference_worker, args=(frame_queues, response_queues))
+	inference_process.start()
+
+
 
 	# Wait for all processes to complete
 	for p in streaming_workers:
