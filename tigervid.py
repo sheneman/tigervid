@@ -1,4 +1,4 @@
-####################################################################
+####################################################################close()
 #
 # tigervid.py
 #
@@ -15,7 +15,6 @@
 
 import os, sys, time, pathlib
 import argparse
-from multiprocessing import Process, current_process, freeze_support, Lock, RLock, Manager
 import cv2
 import math
 import nvidia_smi
@@ -36,7 +35,6 @@ DEFAULT_MODEL            = 'md_v5a.0.0.pt'
 DEFAULT_INTERVAL         = 1.0   # number of seconds between samples
 DEFAULT_PADDING		 = 5.0   # number of seconds of video to include before first detection and after last detection in a clip
 DEFAULT_REPORT_FILENAME  = "report.csv"
-DEFAULT_NPROCS           = 4
 DEFAULT_NOBAR		 = False
 
 YOLODIR = "yolov5"
@@ -51,7 +49,6 @@ parser.add_argument('-m', '--model',	type=str,   default=DEFAULT_MODEL,         
 parser.add_argument('-i', '--interval', type=float, default=DEFAULT_INTERVAL,        help='Number of seconds between AI sampling/detection (DEFAULT: '+str(DEFAULT_INTERVAL)+')')
 parser.add_argument('-p', '--padding',  type=float, default=DEFAULT_PADDING,         help='Number of seconds of video to pad on front and end of a clip (DEFAULT: '+str(DEFAULT_PADDING)+')')
 parser.add_argument('-r', '--report',   type=str,   default=DEFAULT_REPORT_FILENAME, help='Name of report metadata (DEFAULT: '+DEFAULT_REPORT_FILENAME+')')
-parser.add_argument('-j', '--jobs',	type=int,   default=DEFAULT_NPROCS,          help='Number of concurrent (parallel) processes (DEFAULT: '+str(DEFAULT_NPROCS)+')')
 parser.add_argument('-l', '--logging',  type=str,   default=DEFAULT_LOGGING_DIR,     help='The directory for log files (DEFAULT: '+str(DEFAULT_LOGGING_DIR)+')')
 
 parser.add_argument('-n', '--nobar',    action='store_true',  default=DEFAULT_NOBAR,     help='Turns off the Progress Bar during processing.  (DEFAULT: Use Progress Bar)')
@@ -103,23 +100,12 @@ else:
 
 torch.device(device)
 
-if __name__ != '__main__':
-	logging.getLogger('torch.hub').setLevel(logging.ERROR)
+logging.getLogger('torch.hub').setLevel(logging.ERROR)
 	    
-	try:
-		if(os.path.exists(YOLODIR)):
-			model = torch.hub.load(YOLODIR, 'custom', path=args.model, _verbose=False, verbose=False, source='local')
-		else:
-			model = torch.hub.load('ultralytics/yolov5', 'custom', path=args.model, _verbose=False, verbose=False)
-
-		model.to(device)
-	except:
-		print("COULD NOT DEPLOY MODEL TO DEVICE (GPU, etc.)")
-		sys.exit(-1)
 
 
 
-def report(pid, report_list):
+def report(report_list):
 
 
 	filename,clip_path,fps,start_frame,end_frame,confidences = report_list
@@ -210,7 +196,7 @@ def chunks(filenames, n):
 #     result as dict with keys:  {frame_buffer, detection (boolean), confidence score}
 #     success (True/False) 
 #
-def get_video_chunk(invid, model, interval_sz, pu_lock):
+def get_video_chunk(invid, model, interval_sz):
 
 	global chunk_idx
 
@@ -228,17 +214,13 @@ def get_video_chunk(invid, model, interval_sz, pu_lock):
 			#print("Error:  Could not read frame chunk: %d" %chunk_idx)
 			chunk_idx += 1
 			return(None, False)
-			
 
 	inference_frame = cv2.resize(image, (640,640))
-	with pu_lock:
-		try:
-			results = model(inference_frame).pandas().xyxy[0]
-		except:
-			print("Error: Could not run model inference on frame from chunk index: %d" %chunk_idx)
-			sys.exit(-1)
-			#chunk_idx += 1
-			#return(None, False)
+	try:
+		results = model(inference_frame).pandas().xyxy[0]
+	except:
+		print("Error: Could not run model inference on frame from chunk index: %d" %chunk_idx)
+		sys.exit(-1)
 
 
 	if(results.shape[0]):
@@ -247,7 +229,7 @@ def get_video_chunk(invid, model, interval_sz, pu_lock):
 	else:
 		detection = False
 		confidence = None
-    
+	    
 	#print("----> Detection is [%s] for chunk index: %d" %(str(detection), chunk_idx))
 
 	res["buffer"]	  = buf
@@ -289,18 +271,16 @@ def get_debug_buffer(frame_chunk):
 
 
 
-def process_chunk(pid, chunk, pu_lock, report_lock):
+def process_dir(model, files):
 
 	global args
-	global model
 	global chunk_idx
 	global most_recent_written_chunk
 
-	# lets pace ourselves on startup to help avoid general race conditions
-	time.sleep(pid*1)
+	print("In process_dir() - files = ", files)
+	print("\n")
 
-	for fcnt, filename in enumerate(chunk):
-
+	for fcnt, filename in enumerate(files):
 
 		while(True):
 			try:
@@ -320,10 +300,11 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 
 		(width,height) = size
 
+		print("\nOpening file: ",filename, flush=True)
 		try:
 			invid = cv2.VideoCapture(filename)
 		except:
-			print("Could not read video file: ", filename, " skipping...", flush=True)
+			print("\nCould not read video file: ", filename, " skipping...", flush=True)
 			continue
 
 		DETECTION = 500
@@ -342,19 +323,22 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 
 		most_recent_written_chunk = -1
 	
-		#print("NUMBER OF FRAMES: ", nframes)
-		#print("NUMBER OF CHUNKS: ", nchunks)
-		#print("FRAMES PER INTERVAL: ", interval_frames)	
-		#print("PADDING INTERVALS: ", padding_intervals)
+		print("  NUMBER OF FRAMES: ", nframes)
+		print("  NUMBER OF CHUNKS: ", nchunks)
+		print("  FRAMES PER INTERVAL: ", interval_frames)	
+		print("  PADDING INTERVALS: ", padding_intervals)
 
 		#clear_screen()
 		if(args.nobar):
-			print("pid=%s Processing video %d/%d: %s" %(str(pid).zfill(2),fcnt+1,len(chunk),filename), flush=True)
+			print("Processing video %d/%d: %s" %(fcnt+1,len(files),filename), flush=True)
 		else:
-			pbar = tqdm(total=nframes,position=pid,ncols=100,unit=" frames",leave=False,mininterval=0.5,file=sys.stdout)
-			pbar.set_description("pid=%s Processing video %d/%d: %s" %(str(pid).zfill(2),fcnt+1,len(chunk),filename))
+			pbar = tqdm(total=nframes,ncols=100,unit=" frames",leave=False,mininterval=0.5,file=sys.stdout)
+			pbar.set_description("Processing video %d/%d: %s" %(fcnt+1,len(files),filename))
 
-		frame_chunk, success = get_video_chunk(invid, model, interval_frames, pu_lock)
+		print("Grabbing first video chunk from ", filename, flush=True)
+		frame_chunk, success = get_video_chunk(invid, model, interval_frames)
+		print("Result: ", success, flush=True)
+	    
 		if(frame_chunk["detection"] == True):
 			confidences.append(frame_chunk["confidence"])
 		
@@ -383,8 +367,10 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 				fn = os.path.basename(filename)
 				clip_name = os.path.splitext(fn)[0] + "_{:03d}".format(clip_number) + ".mp4"
 				clip_path = os.path.join(args.output, clip_name)
+
 				fourcc = cv2.VideoWriter_fourcc(*'mp4v')	
 				clip = cv2.VideoWriter(clip_path, fourcc, fps, (width,height))
+
 				clip_number += 1
 			
 				# track the first frame of the clip for export to metadata report
@@ -416,7 +402,7 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 				forward_buf.append(frame_chunk)
 				forward_detection_flag = frame_chunk["detection"]
 				for i in range(0,2*padding_intervals+1):   #SHENEMAN
-					frame_chunk, success = get_video_chunk(invid, model, interval_frames, pu_lock)
+					frame_chunk, success = get_video_chunk(invid, model, interval_frames)
 					if(success and frame_chunk["detection"] == True):
 						confidences.append(frame_chunk["confidence"])
 					if(not args.nobar):
@@ -460,8 +446,7 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 					## WRITE CLIP TO DISK AND LOG
 					clip.release()	
 					clip_end_frame = (most_recent_written_chunk * interval_frames) + interval_frames
-					with report_lock:
-						report(pid, [filename, clip_path, fps, clip_start_frame, clip_end_frame, confidences])
+					report([filename, clip_path, fps, clip_start_frame, clip_end_frame, confidences])
 					#print("***WROTE CLIP TO DISK***")
 
 					# some debugging of buffers
@@ -546,25 +531,27 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 					buffer_chunks.pop(0)
     
 		
-			frame_chunk, success = get_video_chunk(invid, model, interval_frames, pu_lock)
+			frame_chunk, success = get_video_chunk(invid, model, interval_frames)
 			if(success and frame_chunk["detection"] == True):
 				confidences.append(frame_chunk["confidence"])
 			if(not args.nobar):
 				pbar.update(interval_frames)
 
 
+	
+		print("\nTrying tp release clip for ", filename, flush=True)
 		try:
 			clip.release()
 			clip_end_frame = (most_recent_written_chunk * interval_frames) + interval_frames
-			with report_lock:
-				report(pid, [filename, clip_path, fps, clip_start_frame, clip_end_frame, confidences])
+			report([filename, clip_path, fps, clip_start_frame, clip_end_frame, confidences])
 		except:
-			break
+			None
 			 
 		invid.release()
 
 	if(not args.nobar):
 		pbar.close()
+
 	#clear_screen()
 
 
@@ -585,7 +572,6 @@ def main():
 			mem_total, mem_used, mem_free = gpu_info[g]
 			print("GPU:{}, Memory : ({:.2f}% free): {}(total), {} (free), {} (used)".format(g-1, 100*mem_free/mem_total, human_size(mem_total), human_size(mem_free), human_size(mem_used)))
 
-	freeze_support()  # For Windows support - multiprocessing with tqdm
 
 	try:
 		report_file = open(args.report, "w")
@@ -621,58 +607,38 @@ def main():
 	print("       MODEL WEIGHTS: ", args.model)
 	print("   SAMPLING INTERVAL: ", args.interval, "seconds")
 	print("    PADDING DURATION: ", args.padding, "seconds")
-	print("    CONCURRENT PROCS: ", args.jobs)
 	print("DISABLE PROGRESS BAR: ", args.nobar)
 	print("             USE GPU: ", usegpu)
 	print("         REPORT FILE: ", args.report)
 	print("*********************************************\n\n", flush=True)
 
+	print("Loading model...", flush=True)
+	try:
+		if(os.path.exists(YOLODIR)):
+			model = torch.hub.load(YOLODIR, 'custom', path=args.model, _verbose=False, verbose=False, source='local')
+		else:
+			model = torch.hub.load('ultralytics/yolov5', 'custom', path=args.model, _verbose=False, verbose=False)
+
+		model.to(device)
+	except:
+		print("COULD NOT DEPLOY MODEL TO DEVICE (GPU, etc.)")
+		exit(-1)
+	print("Model loaded!", flush=True)
+
 	path = os.path.join(args.input, "*.mp4")
 	files = glob.glob(path)
-	random.shuffle(files)
-	ch = chunks(files,args.jobs)
+	#random.shuffle(files)
 
-	manager = Manager()
+	print("FOUND %d MP4 FILES" %len(files), flush=True)
 
-	pu_lock     = manager.Lock()
-	report_lock = manager.Lock()
+	process_dir(model, files)
 
 	if(usegpu==True):
 		torch.cuda.empty_cache()
 
-	processes = []
-	for pid,chunk in enumerate(ch):
-		p = Process(target = process_chunk, args=(pid, chunk, pu_lock, report_lock))
-		processes.append(p)
-		p.start()
-
-
-	while any(p.is_alive() for p in processes):
-		for p in processes:
-			if p.exitcode is not None and p.exitcode != 0:
-				print(f"Terminating due to failure in process {p.pid}")
-
-				for p in processes:
-					p.terminate()
-
-				time.sleep(2)
-				clear_screen()
-				reset_screen()
-
-				print("\n")
-				print("*****************************************************************************")
-				print("SOMETHING WENT HORRIBLY WRONG:")
-				print("Failure to run model within system resources (e.g. GPU RAM).")
-				print("Please reduce the number of concurrent jobs (i.e., --jobs <n>) and try again!")
-				print("*****************************************************************************")
-				print("\n\n")
-
-				return
-
-		time.sleep(0.5)  # Check periodically
-
-	clear_screen()
-	reset_screen()
+	#if(not args.nobar):
+	#	clear_screen()
+	#	reset_screen()
 
 	print("Total time to process %d videos: %.02f seconds" %(len(files), time.time()-all_start_time))
 	print("Report file saved to %s" %args.report)
@@ -680,8 +646,6 @@ def main():
 
 
 if __name__ == '__main__':
-
-	torch.multiprocessing.set_start_method('spawn')
 
 	main()
 
