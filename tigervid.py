@@ -559,7 +559,7 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 			with report_lock:
 				report(pid, [filename, clip_path, fps, clip_start_frame, clip_end_frame, confidences])
 		except:
-			break
+			None
 			 
 		invid.release()
 
