@@ -102,6 +102,8 @@ def report(pid, results_queue, report_list):
 
 
 def reporting_worker(reporting_queue):
+
+	print("Starting up reporting worker process...", flush=True)
 	
 	while True:
 		report_list = reporting_queue.get()
@@ -184,6 +186,8 @@ def chunks(filenames, n):
 
 
 def inference_worker(frame_queues, response_queues):
+
+	print("In inference_worker()...", flush=True)
 
 
 	if(args.cpu==True):
@@ -279,7 +283,7 @@ def get_video_chunk(pid, frame_queue, response_queue, invid, interval_sz):
 
 	global chunk_idx
 
-	print("pid=%s: Getting chunk: %d" %(str(pid).zfill(2),chunk_idx))
+	#print("pid=%s: Getting chunk: %d" %(str(pid).zfill(2),chunk_idx))
 
 	res = {}
 	res["chunk_idx"] = chunk_idx
@@ -294,7 +298,7 @@ def get_video_chunk(pid, frame_queue, response_queue, invid, interval_sz):
 			chunk_idx += 1
 			return(None, False)
 			
-	print("pid=%s: got video chunk %d" %(str(pid).zfill(2),chunk_idx), flush=True)
+	#print("pid=%s: got video chunk %d" %(str(pid).zfill(2),chunk_idx), flush=True)
 
 	inference_frame = cv2.resize(image, (640,640))
 	
@@ -302,7 +306,7 @@ def get_video_chunk(pid, frame_queue, response_queue, invid, interval_sz):
 		# put the frame on the inference queue for this worker
 		frame_queue.put((inference_frame, chunk_idx))
 
-		print("pid=%s: inference queued on chunk %d..." %(str(pid).zfill(2),chunk_idx), flush=True)
+		#print("pid=%s: inference queued on chunk %d..." %(str(pid).zfill(2),chunk_idx), flush=True)
 
 	except Exception as e:
 		print(f"An unexpected error occurred: {e}")
@@ -311,10 +315,10 @@ def get_video_chunk(pid, frame_queue, response_queue, invid, interval_sz):
 
 
 	# synchronously block this subprocess on getting an inference response from the inference process
-	print("Waiting for data...", flush=True)
+	#print("Waiting for data...", flush=True)
 	try:
 		data = response_queue.get(timeout=128) 
-		print("pid=%s: Chunk Index: %d --> Received: " %(str(pid).zfill(2),chunk_idx), data, flush=True)
+		#print("pid=%s: Chunk Index: %d --> Received: " %(str(pid).zfill(2),chunk_idx), data, flush=True)
 		#if(pid == 0):
 		#	print("PID = 0, sleeping artificially", flush=True)
 		#	time.sleep(30)
@@ -370,6 +374,8 @@ def streaming_worker(pid, chunk, frame_queue, response_queue, reporting_queue):
 	global chunk_idx
 	global most_recent_written_chunk
 
+	print("Starting up streaming worker process #%d" %pid, flush=True)
+
 
 	resource.setrlimit(resource.RLIMIT_NOFILE, (DEFAULT_MAX_FD, DEFAULT_MAX_FD))
 
@@ -383,7 +389,7 @@ def streaming_worker(pid, chunk, frame_queue, response_queue, reporting_queue):
 
 		while(True):
 			try:
-				print("pid=%s: imageio() start" %(str(pid).zfill(2)), flush=True)
+				#print("pid=%s: imageio() start" %(str(pid).zfill(2)), flush=True)
 				v=imageio.get_reader(filename,  'ffmpeg')
 				nframes  = v.count_frames()
 				metadata = v.get_meta_data()
@@ -393,7 +399,7 @@ def streaming_worker(pid, chunk, frame_queue, response_queue, reporting_queue):
 				duration = metadata['duration']
 				size = metadata['size']
 				
-				print("pid=%s: imageio() end" %(str(pid).zfill(2)), flush=True)
+				#print("pid=%s: imageio() end" %(str(pid).zfill(2)), flush=True)
 	
 				break
 			except:
@@ -403,9 +409,9 @@ def streaming_worker(pid, chunk, frame_queue, response_queue, reporting_queue):
 		(width,height) = size
 
 		try:
-			print("pid=%s: open VideoCapture()" %(str(pid).zfill(2)), flush=True)
+			#print("pid=%s: open VideoCapture()" %(str(pid).zfill(2)), flush=True)
 			invid = cv2.VideoCapture(filename)
-			print("pid=%s: VideoCapture() returned" %(str(pid).zfill(2)), flush=True)
+			#print("pid=%s: VideoCapture() returned" %(str(pid).zfill(2)), flush=True)
 		except:
 			print("Could not read video file: ", filename, " skipping...", flush=True)
 			continue
@@ -440,8 +446,8 @@ def streaming_worker(pid, chunk, frame_queue, response_queue, reporting_queue):
 			pbar = tqdm(total=nframes,position=pid,ncols=100,unit=" frames",leave=False,mininterval=0.5,file=sys.stdout)
 			pbar.set_description("pid=%s: Processing video %d/%d: %s" %(str(pid).zfill(2),fcnt+1,len(chunk),filename))
 
-		print("pid=%s:    FRAME QUEUE: " %(str(pid).zfill(2)), frame_queue,    flush=True)
-		print("pid=%s: RESPONSE QUEUE: " %(str(pid).zfill(2)), response_queue, flush=True)
+		#print("pid=%s:    FRAME QUEUE: " %(str(pid).zfill(2)), frame_queue,    flush=True)
+		#print("pid=%s: RESPONSE QUEUE: " %(str(pid).zfill(2)), response_queue, flush=True)
 
 		frame_chunk, success = get_video_chunk(pid, frame_queue, response_queue, invid, interval_frames)
 		if(frame_chunk["detection"] == True):
@@ -721,6 +727,8 @@ def main():
 	files = glob.glob(path)
 	random.shuffle(files)
 	chs = chunks(files,args.workers)
+
+	print("Found %d MP4 files" %(len(files)), flush=True)
 
 	# instantiate the report process
 	reporting_queue   = Queue(maxsize=args.workers*2)
