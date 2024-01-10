@@ -653,7 +653,7 @@ def streaming_worker(pid, chunk, frame_queue, response_queue, reporting_queue):
 			if(clip_path != latest_reported_clip_path):  # make sure we don't record the same clip 2x
 				latest_reported_clip_path = report(pid, reporting_queue, [filename, clip_path, fps, clip_start_frame, clip_end_frame, confidences])
 		except:
-			break
+			None	
 			 
 		invid.release()
 
