@@ -302,7 +302,8 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 	for fcnt, filename in enumerate(chunk):
 
 
-		while(True):
+		imageio_success = False
+		for x in range(10):
 			try:
 				v=imageio.get_reader(filename,  'ffmpeg')
 				nframes  = v.count_frames()
@@ -312,18 +313,24 @@ def process_chunk(pid, chunk, pu_lock, report_lock):
 				fps = metadata['fps']
 				duration = metadata['duration']
 				size = metadata['size']
+
+				imageio_success = True
 	
 				break
 			except:
-				print("WARNING: imageio timeout.   Trying again.", flush=True)
-				time.sleep(0.25)
+				print("pid=%s: WARNING: imageio timeout %s.   Trying again...." %(str(pid).zfill(2), filename), flush=True)
+				time.sleep(1)
+
+		if(imageio_success == False):
+			print("pid=%s: WARNING: imageio could not read %s.  Skipping!" %(str(pid).zfill(2), filename), flush=True)
+			continue
 
 		(width,height) = size
 
 		try:
 			invid = cv2.VideoCapture(filename)
 		except:
-			print("Could not read video file: ", filename, " skipping...", flush=True)
+			print("pid=%s: Could not read video file: ", filename, " skipping..." %(str(pid).zfill(2)), flush=True)
 			continue
 
 		DETECTION = 500
